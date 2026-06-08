@@ -179,7 +179,7 @@ class lattesink:
         )
         self.btn_cancelar.pack(side="left")
 
-    # ── Métodos de UI ──────────────────────────────────────────────────────────
+    # Métodos de UI
 
     def escolher_pasta(self):
         pasta = filedialog.askdirectory(
@@ -252,7 +252,7 @@ class lattesink:
         self.progresso_var.set(0)
         self._atualizar_btn_iniciar()
 
-    # ── Captura ────────────────────────────────────────────────────────────────
+    # Captura de tela
 
     def iniciar_captura(self):
         """Dispara a captura em uma thread separada para não travar a janela."""
