@@ -14,7 +14,7 @@ class lattesink:
     def __init__(self):
         self.janela = tk.Tk()
         self.janela.title('Lattes ink')
-        self.janela.iconbitmap('C:/Users/matheus.fernandes/OneDrive - FELUMA 365 AD/Documentos/2. Python - PROJETOS/LattesINK/Lattes.ico')
+        self.janela.iconbitmap('')
         self.janela.geometry('800x480')
         self.janela.resizable(width=False, height=False)
         self.janela.configure(bg='#faffff')
