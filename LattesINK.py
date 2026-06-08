@@ -22,6 +22,8 @@ class lattesink:
         # Estado interno
         self.ids_carregados = []
         self._captura_ativa = False
+        self._cancelar_solicitado = False
+        self._driver_ativo = None  # Referência ao driver em uso (para fechar ao cancelar)
 
         # Frame principal
         self.frame_principal = tk.Frame(self.janela, bg='#faffff')
@@ -149,9 +151,12 @@ class lattesink:
             anchor='w'
         ).pack(fill='x', pady=(0, 10))
 
-        # Botão iniciar
+        # Botões de ação (iniciar + cancelar)
+        frame_botoes = tk.Frame(self.frame_principal, bg='#faffff')
+        frame_botoes.pack()
+
         self.btn_iniciar = tk.Button(
-            self.frame_principal,
+            frame_botoes,
             text="Iniciar Captura",
             command=self.iniciar_captura,
             bg="#583f20", fg="white",
@@ -160,9 +165,21 @@ class lattesink:
             cursor="arrow", relief='flat',
             state="disabled"
         )
-        self.btn_iniciar.pack()
+        self.btn_iniciar.pack(side="left", padx=(0, 8))
 
-    # Métodos de UI
+        self.btn_cancelar = tk.Button(
+            frame_botoes,
+            text="Cancelar",
+            command=self.cancelar_captura,
+            bg="#c0392b", fg="white",
+            font=("Arial", 10, "bold"),
+            padx=10, pady=8,
+            cursor="arrow", relief='flat',
+            state="disabled"
+        )
+        self.btn_cancelar.pack(side="left")
+
+    # ── Métodos de UI ──────────────────────────────────────────────────────────
 
     def escolher_pasta(self):
         pasta = filedialog.askdirectory(
@@ -226,7 +243,16 @@ class lattesink:
         self.progresso_var.set((atual / total) * 100)
         self.label_progresso.configure(text=f"{atual} / {total}")
 
-    # Captura
+    def _resetar_ids(self):
+        """Limpa os IDs carregados e pede que o usuário selecione um novo arquivo."""
+        self.ids_carregados = []
+        self.ids_status_var.set("Nenhum arquivo selecionado")
+        self.label_ids_status.configure(fg="gray")
+        self.label_progresso.configure(text="0 / 0")
+        self.progresso_var.set(0)
+        self._atualizar_btn_iniciar()
+
+    # ── Captura ────────────────────────────────────────────────────────────────
 
     def iniciar_captura(self):
         """Dispara a captura em uma thread separada para não travar a janela."""
@@ -234,11 +260,30 @@ class lattesink:
             return
 
         self._captura_ativa = True
+        self._cancelar_solicitado = False
         self.btn_iniciar.configure(state="disabled", cursor="arrow", text="⏳  Capturando...")
+        self.btn_cancelar.configure(state="normal", cursor="hand2", text="Cancelar")
         self.progresso_var.set(0)
 
         thread = threading.Thread(target=self._executar_capturas, daemon=True)
         thread.start()
+
+    def cancelar_captura(self):
+        """Solicita o cancelamento da captura em andamento."""
+        if not self._captura_ativa:
+            return
+
+        self._cancelar_solicitado = True
+        self.btn_cancelar.configure(state="disabled", cursor="arrow", text="Cancelando...")
+        self._atualizar_log("🛑  Cancelamento solicitado — aguardando fechar o navegador atual...")
+
+        # Fecha o driver ativo imediatamente, interrompendo o sleep/wait em curso
+        if self._driver_ativo:
+            try:
+                self._driver_ativo.quit()
+            except Exception:
+                pass
+            self._driver_ativo = None
 
     def _executar_capturas(self):
         """Roda em background: itera os IDs e chama o Selenium para cada um."""
@@ -247,15 +292,26 @@ class lattesink:
         erros = []
 
         for i, lattes_id in enumerate(self.ids_carregados, start=1):
-            self.janela.after(0, self._atualizar_log, f"🌐  [{i}/{total}]  Abrindo navegador para ID: {lattes_id}")
+            # Verifica cancelamento antes de cada ID
+            if self._cancelar_solicitado:
+                self.janela.after(0, self._finalizar_cancelamento, i - 1, total)
+                return
+
+            self.janela.after(0, self._atualizar_log,
+                f"🌐  [{i}/{total}]  Abrindo navegador para ID: {lattes_id}")
             sucesso = self._screenshot_com_captcha_manual(lattes_id, pasta)
+
+            # Verifica cancelamento logo após fechar o driver
+            if self._cancelar_solicitado:
+                self.janela.after(0, self._finalizar_cancelamento, i, total)
+                return
 
             if not sucesso:
                 erros.append(lattes_id)
 
             self.janela.after(0, self._atualizar_progresso, i, total)
 
-        # Finaliza na thread principal
+        # Finaliza normalmente na thread principal
         self.janela.after(0, self._finalizar_captura, erros, total)
 
     def _screenshot_com_captcha_manual(self, lattes_id, pasta_destino):
@@ -270,13 +326,18 @@ class lattesink:
         url = f'https://lattes.cnpq.br/{lattes_id}'
         caminho_arquivo = os.path.join(pasta_destino, f'{lattes_id}.png')
         driver = webdriver.Chrome(options=options)
+        self._driver_ativo = driver  # Registra para poder fechar ao cancelar
 
         try:
             driver.get(url)
             self.janela.after(0, self._atualizar_log,
                 f"⏳  [{lattes_id}]  Aguardando resolução do CAPTCHA (20s)...")
 
-            time.sleep(20) # Tempo para o usuário resolver o CAPTCHA manualmente
+            # Espera interruptível: verifica o flag a cada 0,5s durante 20s
+            for _ in range(40):
+                if self._cancelar_solicitado:
+                    return False
+                time.sleep(0.5)
 
             # Confirma que a página carregou após o CAPTCHA
             try:
@@ -287,6 +348,9 @@ class lattesink:
                 self.janela.after(0, self._atualizar_log,
                     f"⚠️  [{lattes_id}]  Não foi possível confirmar o carregamento da página.")
 
+            if self._cancelar_solicitado:
+                return False
+
             time.sleep(3)  # Aguarda carregamento completo
 
             driver.save_screenshot(caminho_arquivo)
@@ -295,17 +359,23 @@ class lattesink:
             return True
 
         except Exception as e:
-            self.janela.after(0, self._atualizar_log,
-                f"❌  [{lattes_id}]  Erro: {e}")
+            if not self._cancelar_solicitado:
+                self.janela.after(0, self._atualizar_log,
+                    f"❌  [{lattes_id}]  Erro: {e}")
             return False
 
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            self._driver_ativo = None
 
     def _finalizar_captura(self, erros, total):
-        """Chamado na thread principal ao terminar todos os IDs."""
+        """Chamado na thread principal ao terminar todos os IDs com sucesso."""
         self._captura_ativa = False
         self.btn_iniciar.configure(state="normal", cursor="hand2", text="▶  Iniciar Captura")
+        self.btn_cancelar.configure(state="disabled", cursor="arrow", text="Cancelar")
 
         if erros:
             self._atualizar_log(f"⚠️  Concluído com erros em {len(erros)} ID(s): {', '.join(erros)}")
@@ -321,6 +391,23 @@ class lattesink:
                 f"Todos os {total} screenshots foram salvos com sucesso em:\n{self.pasta_destino.get()}"
             )
 
+    def _finalizar_cancelamento(self, concluidos, total):
+        """Chamado na thread principal quando o usuário cancela."""
+        self._captura_ativa = False
+        self._cancelar_solicitado = False
+        self.btn_cancelar.configure(state="disabled", cursor="arrow", text="Cancelar")
+        self.btn_iniciar.configure(state="disabled", cursor="arrow", text="Iniciar Captura")
+
+        self._atualizar_log(
+            f"🛑  Captura cancelada — {concluidos} de {total} ID(s) processados."
+        )
+        messagebox.showinfo(
+            "Captura cancelada",
+            f"A captura foi cancelada pelo usuário.\n"
+            f"{concluidos} de {total} ID(s) foram processados.\n\n"
+            f"Selecione um novo arquivo .txt para continuar."
+        )
+        self._resetar_ids() # Reseta os IDs para forçar nova seleção de arquivo
 
 
 if __name__ == "__main__":
