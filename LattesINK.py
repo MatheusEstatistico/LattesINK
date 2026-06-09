@@ -1,15 +1,13 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import os
-import threading
-import csv
-import openpyxl
+import os, threading, csv, openpyxl, time
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import time
+
 
 
 class lattesink:
@@ -182,7 +180,6 @@ class lattesink:
         self.btn_cancelar.pack(side="left")
 
     # Métodos de UI
-
     def escolher_pasta(self):
         pasta = filedialog.askdirectory(
             title='Escolha a pasta onde os arquivos serão salvos',
@@ -322,7 +319,7 @@ class lattesink:
         for col in colunas:
             listbox.insert(tk.END, col)
         listbox.pack(side="left", fill="both", expand=True)
-        listbox.selection_set(0)  # pré-seleciona a primeira coluna
+        listbox.selection_set(0)  # pré-seleciona a primeira coluna como título
         scrollbar.config(command=listbox.yview)
 
         # Preview dos primeiros valores da coluna selecionada
