@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import os
 import threading
+import csv
+import openpyxl
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -77,7 +79,7 @@ class lattesink:
         # Seção 2: Arquivo de IDs
         tk.Label(
             self.frame_principal,
-            text='2. Envie o arquivo com os Lattes IDs (.txt)',
+            text='2. Envie o arquivo com os Lattes IDs (.txt, .xlsx ou .csv)',
             font=('Arial', 10, 'bold'),
             bg='#faffff',
             anchor='w'
@@ -200,28 +202,183 @@ class lattesink:
         arquivo = filedialog.askopenfilename(
             title='Selecione o arquivo com os Lattes IDs',
             initialdir=os.path.expanduser('~'),
-            filetypes=[("Arquivo de texto", "*.txt"), ("Todos os arquivos", "*.*")]
+            filetypes=[
+                ("Todos os formatos suportados", "*.txt *.xlsx *.csv"),
+                ("Arquivo de texto", "*.txt"),
+                ("Planilha Excel", "*.xlsx"),
+                ("Arquivo CSV", "*.csv"),
+                ("Todos os arquivos", "*.*")
+            ]
         )
         if not arquivo:
             return
 
+        ext = os.path.splitext(arquivo)[1].lower()
+
+        if ext == '.txt':
+            ids = self._ler_ids_txt(arquivo)
+            if ids is not None:
+                self._aplicar_ids(ids, arquivo)
+        elif ext in ('.xlsx', '.csv'):
+            self._abrir_seletor_coluna(arquivo, ext)
+        else:
+            messagebox.showerror("Formato não suportado", "Use arquivos .txt, .xlsx ou .csv.")
+
+    def _ler_ids_txt(self, arquivo):
+        """Lê IDs de um arquivo .txt (um por linha). Retorna lista ou None em caso de erro."""
         try:
             with open(arquivo, 'r', encoding='utf-8') as f:
-                linhas = f.readlines()
+                ids = [linha.strip() for linha in f if linha.strip()]
         except Exception as e:
             messagebox.showerror("Erro ao ler arquivo", f"Não foi possível ler o arquivo:\n{e}")
-            return
-
-        ids = [linha.strip() for linha in linhas if linha.strip()]
+            return None
         if not ids:
-            messagebox.showwarning("Arquivo vazio", "O arquivo selecionado não contém nenhum ID.")
-            return
+            messagebox.showwarning("Arquivo vazio", "O arquivo não contém nenhum ID.")
+            return None
+        return ids
 
+    def _aplicar_ids(self, ids, arquivo):
+        """Registra a lista de IDs e atualiza a interface."""
         self.ids_carregados = ids
         self.ids_status_var.set(f"✅  {len(ids)} ID(s) carregado(s)  —  {os.path.basename(arquivo)}")
         self.label_ids_status.configure(fg="#2e7d32")
         self.label_progresso.configure(text=f"0 / {len(ids)}")
         self._atualizar_btn_iniciar()
+
+    def _ler_colunas_arquivo(self, arquivo, ext):
+        """
+        Retorna (colunas, dados) onde:
+          - colunas: lista de nomes das colunas (str)
+          - dados: lista de listas com os valores de cada coluna
+        """
+        if ext == '.xlsx':
+            wb = openpyxl.load_workbook(arquivo, read_only=True, data_only=True)
+            ws = wb.active
+            linhas = list(ws.iter_rows(values_only=True))
+            wb.close()
+            if not linhas:
+                return [], []
+            cabecalho = [str(c) if c is not None else f"Coluna {i+1}"
+                         for i, c in enumerate(linhas[0])]
+            dados = [[str(row[i]) if row[i] is not None else ""
+                      for row in linhas[1:]]
+                     for i in range(len(cabecalho))]
+            return cabecalho, dados
+        else:  # .csv
+            with open(arquivo, newline='', encoding='utf-8-sig') as f:
+                leitor = csv.reader(f)
+                linhas = list(leitor)
+            if not linhas:
+                return [], []
+            cabecalho = [str(c).strip() if c else f"Coluna {i+1}"
+                         for i, c in enumerate(linhas[0])]
+            dados = [[row[i].strip() if i < len(row) else ""
+                      for row in linhas[1:]]
+                     for i in range(len(cabecalho))]
+            return cabecalho, dados
+
+    def _abrir_seletor_coluna(self, arquivo, ext):
+        """Abre uma janela modal para o usuário escolher qual coluna contém os IDs."""
+        try:
+            colunas, dados = self._ler_colunas_arquivo(arquivo, ext)
+        except Exception as e:
+            messagebox.showerror("Erro ao ler arquivo", f"Não foi possível ler o arquivo:\n{e}")
+            return
+
+        if not colunas:
+            messagebox.showwarning("Arquivo vazio", "O arquivo não contém dados.")
+            return
+
+        # Janela modal
+        modal = tk.Toplevel(self.janela)
+        modal.title("Selecionar coluna dos IDs")
+        modal.geometry("420x340")
+        modal.resizable(False, False)
+        modal.configure(bg="#faffff")
+        modal.grab_set()  # Bloqueia a janela principal enquanto modal estiver aberta
+
+        tk.Label(
+            modal,
+            text="Selecione a coluna que contém os Lattes IDs:",
+            font=("Arial", 10, "bold"),
+            bg="#faffff"
+        ).pack(pady=(18, 6), padx=16, anchor="w")
+
+        # Frame com lista + scrollbar
+        frame_lista = tk.Frame(modal, bg="#faffff")
+        frame_lista.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        scrollbar = tk.Scrollbar(frame_lista)
+        scrollbar.pack(side="right", fill="y")
+
+        listbox = tk.Listbox(
+            frame_lista,
+            yscrollcommand=scrollbar.set,
+            font=("Arial", 10),
+            selectmode="single",
+            activestyle="dotbox",
+            height=8
+        )
+        for col in colunas:
+            listbox.insert(tk.END, col)
+        listbox.pack(side="left", fill="both", expand=True)
+        listbox.selection_set(0)  # pré-seleciona a primeira coluna
+        scrollbar.config(command=listbox.yview)
+
+        # Preview dos primeiros valores da coluna selecionada
+        lbl_preview = tk.Label(
+            modal,
+            text="",
+            font=("Arial", 8),
+            fg="#555",
+            bg="#faffff",
+            anchor="w",
+            wraplength=390
+        )
+        lbl_preview.pack(padx=16, fill="x")
+
+        def _atualizar_preview(*_):
+            sel = listbox.curselection()
+            if not sel:
+                return
+            idx = sel[0]
+            amostra = [v for v in dados[idx] if v][:5]
+            lbl_preview.configure(
+                text="Prévia: " + ",  ".join(amostra) if amostra else "Prévia: (sem dados)"
+            )
+
+        listbox.bind("<<ListboxSelect>>", _atualizar_preview)
+        _atualizar_preview()  # mostra prévia inicial
+
+        # Botões Confirmar / Cancelar
+        frame_btns = tk.Frame(modal, bg="#faffff")
+        frame_btns.pack(pady=(4, 14))
+
+        def _confirmar():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showwarning("Atenção", "Selecione uma coluna.", parent=modal)
+                return
+            idx = sel[0]
+            ids = [v for v in dados[idx] if v]
+            if not ids:
+                messagebox.showwarning("Coluna vazia",
+                    "A coluna selecionada não contém nenhum ID.", parent=modal)
+                return
+            modal.destroy()
+            self._aplicar_ids(ids, arquivo)
+
+        tk.Button(
+            frame_btns, text="Confirmar", command=_confirmar,
+            bg="#4CAF50", fg="white", font=("Arial", 10, "bold"),
+            padx=12, pady=6, relief="flat", cursor="hand2"
+        ).pack(side="left", padx=(0, 10))
+
+        tk.Button(
+            frame_btns, text="Cancelar", command=modal.destroy,
+            bg="#c0392b", fg="white", font=("Arial", 10, "bold"),
+            padx=12, pady=6, relief="flat", cursor="hand2"
+        ).pack(side="left")
 
     def _atualizar_btn_iniciar(self):
         pasta_ok = (
@@ -253,7 +410,6 @@ class lattesink:
         self._atualizar_btn_iniciar()
 
     # Captura de tela
-
     def iniciar_captura(self):
         """Dispara a captura em uma thread separada para não travar a janela."""
         if self._captura_ativa:
@@ -311,8 +467,7 @@ class lattesink:
 
             self.janela.after(0, self._atualizar_progresso, i, total)
 
-        # Finaliza normalmente na thread principal
-        self.janela.after(0, self._finalizar_captura, erros, total)
+        self.janela.after(0, self._finalizar_captura, erros, total) # Finaliza normalmente na thread principal
 
     def _screenshot_com_captcha_manual(self, lattes_id, pasta_destino):
         """
@@ -351,7 +506,7 @@ class lattesink:
             if self._cancelar_solicitado:
                 return False
 
-            time.sleep(3)  # Aguarda carregamento completo
+            time.sleep(2)  # Aguarda carregamento completo
 
             driver.save_screenshot(caminho_arquivo)
             self.janela.after(0, self._atualizar_log,
@@ -405,7 +560,7 @@ class lattesink:
             "Captura cancelada",
             f"A captura foi cancelada pelo usuário.\n"
             f"{concluidos} de {total} ID(s) foram processados.\n\n"
-            f"Selecione um novo arquivo .txt para continuar."
+            f"Selecione um novo arquivo para continuar."
         )
         self._resetar_ids() # Reseta os IDs para forçar nova seleção de arquivo
 
