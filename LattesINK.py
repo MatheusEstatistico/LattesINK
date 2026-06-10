@@ -1,7 +1,9 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import os, threading, csv, openpyxl, time
 
+import os, threading, csv, openpyxl, time, re
+
+from openpyxl.styles import Font, Alignment, PatternFill
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -9,12 +11,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 
-
 class lattesink:
     def __init__(self):
         self.janela = tk.Tk()
         self.janela.title('Lattes ink')
-        # self.janela.iconbitmap('') # Colocar o caminho do arquivo .ico
+        self.janela.iconbitmap('C:/Users/matheus.fernandes/OneDrive - FELUMA 365 AD/Documentos/2. Python - PROJETOS/LattesINK/Lattes.ico') # Colocar o caminho do arquivo .ico
         self.janela.geometry('800x480')
         self.janela.resizable(width=False, height=False)
         self.janela.configure(bg='#faffff')
@@ -24,6 +25,7 @@ class lattesink:
         self._captura_ativa = False
         self._cancelar_solicitado = False
         self._driver_ativo = None  # Referência ao driver em uso (para fechar ao cancelar)
+        self.dados_coletados = []  # Lista de dicionários com os dados de cada pesquisador
 
         # Frame principal
         self.frame_principal = tk.Frame(self.janela, bg='#faffff')
@@ -151,7 +153,7 @@ class lattesink:
             anchor='w'
         ).pack(fill='x', pady=(0, 10))
 
-        # Botões de ação (iniciar + cancelar)
+        # Botões de ação (iniciar + cancelar + exportar)
         frame_botoes = tk.Frame(self.frame_principal, bg='#faffff')
         frame_botoes.pack()
 
@@ -177,7 +179,19 @@ class lattesink:
             cursor="arrow", relief='flat',
             state="disabled"
         )
-        self.btn_cancelar.pack(side="left")
+        self.btn_cancelar.pack(side="left", padx=(0, 8))
+        
+        self.btn_exportar = tk.Button(
+            frame_botoes,
+            text="Exportar Excel",
+            command=self.exportar_para_excel,
+            bg="#2196F3", fg="white",
+            font=("Arial", 10, "bold"),
+            padx=10, pady=8,
+            cursor="arrow", relief='flat',
+            state="disabled"
+        )
+        self.btn_exportar.pack(side="left")
 
     # Métodos de UI
     def escolher_pasta(self):
@@ -237,9 +251,11 @@ class lattesink:
     def _aplicar_ids(self, ids, arquivo):
         """Registra a lista de IDs e atualiza a interface."""
         self.ids_carregados = ids
+        self.dados_coletados = []  # Reseta os dados coletados
         self.ids_status_var.set(f"✅  {len(ids)} ID(s) carregado(s)  —  {os.path.basename(arquivo)}")
         self.label_ids_status.configure(fg="#2e7d32")
         self.label_progresso.configure(text=f"0 / {len(ids)}")
+        self.btn_exportar.configure(state="disabled")
         self._atualizar_btn_iniciar()
 
     def _ler_colunas_arquivo(self, arquivo, ext):
@@ -319,7 +335,7 @@ class lattesink:
         for col in colunas:
             listbox.insert(tk.END, col)
         listbox.pack(side="left", fill="both", expand=True)
-        listbox.selection_set(0)  # pré-seleciona a primeira coluna como título
+        listbox.selection_set(0)  # pré-seleciona a primeira coluna
         scrollbar.config(command=listbox.yview)
 
         # Preview dos primeiros valores da coluna selecionada
@@ -400,11 +416,86 @@ class lattesink:
     def _resetar_ids(self):
         """Limpa os IDs carregados e pede que o usuário selecione um novo arquivo."""
         self.ids_carregados = []
+        self.dados_coletados = []
         self.ids_status_var.set("Nenhum arquivo selecionado")
         self.label_ids_status.configure(fg="gray")
         self.label_progresso.configure(text="0 / 0")
         self.progresso_var.set(0)
+        self.btn_exportar.configure(state="disabled")
         self._atualizar_btn_iniciar()
+
+    def _extrair_dados_pagina(self, driver, lattes_id):
+        """
+        Extrai nome, ID e data da última atualização da página do Lattes.
+        Retorna um dicionário com os dados ou None em caso de erro.
+        """
+        try:
+            # Construir o link do Lattes
+            link_lattes = f'https://lattes.cnpq.br/{lattes_id}'
+
+            # Tentar encontrar o nome do pesquisador
+            nome = "Não encontrado"
+            try:
+                # O nome geralmente está em um elemento com classe 'nome' ou em um h1/h2
+                elementos_nome = driver.find_elements(By.CSS_SELECTOR, "h1, h2, .nome, .nome-pesquisador")
+                for elem in elementos_nome:
+                    texto = elem.text.strip()
+                    if texto and len(texto) > 3:  # Nome tem pelo menos alguns caracteres
+                        nome = texto
+                        break
+                
+                # Se não encontrou, tenta por XPath mais genérico
+                if nome == "Não encontrado":
+                    xpath_nome = "//div[contains(@class, 'nome')] | //div[contains(@class, 'titulo')] | //h1 | //h2"
+                    elementos_nome = driver.find_elements(By.XPATH, xpath_nome)
+                    for elem in elementos_nome:
+                        texto = elem.text.strip()
+                        if texto and len(texto) > 3:
+                            nome = texto
+                            break
+            except Exception:
+                pass
+
+            # Tentar encontrar a data da última atualização
+            data_atualizacao = "Não encontrada"
+            try:
+                # Padrões comuns de texto para data de atualização
+                padroes = [
+                    r"Última atualização[:\s]+(\d{2}/\d{2}/\d{4})",
+                    r"atualizado[:\s]+(\d{2}/\d{2}/\d{4})",
+                    r"Atualizado[:\s]+(\d{2}/\d{2}/\d{4})",
+                    r"Data da última atualização[:\s]+(\d{2}/\d{2}/\d{4})",
+                    r"(\d{2}/\d{2}/\d{4})"
+                ]
+                
+                # Pega o texto da página
+                page_text = driver.find_element(By.TAG_NAME, "body").text
+                
+                for padrao in padroes:
+                    match = re.search(padrao, page_text)
+                    if match:
+                        data_atualizacao = match.group(1)
+                        break
+                        
+            except Exception:
+                pass
+
+            return {
+                'link_lattes': link_lattes,
+                'id_lattes': lattes_id,
+                'nome': nome,
+                'ultima_atualizacao': data_atualizacao,
+                'arquivo_screenshot': f'{lattes_id}.png'
+            }
+
+        except Exception as e:
+            self.janela.after(0, self._atualizar_log, f"⚠️  [{lattes_id}]  Erro ao extrair dados: {e}")
+            return {
+                'id_lattes': lattes_id,
+                'nome': 'Erro na extração',
+                'ultima_atualizacao': 'Erro na extração',
+                'arquivo_screenshot': f'{lattes_id}.png'
+            }
 
     # Captura de tela
     def iniciar_captura(self):
@@ -414,8 +505,10 @@ class lattesink:
 
         self._captura_ativa = True
         self._cancelar_solicitado = False
+        self.dados_coletados = []  # Reseta os dados coletados
         self.btn_iniciar.configure(state="disabled", cursor="arrow", text="⏳  Capturando...")
         self.btn_cancelar.configure(state="normal", cursor="hand2", text="Cancelar")
+        self.btn_exportar.configure(state="disabled")
         self.progresso_var.set(0)
 
         thread = threading.Thread(target=self._executar_capturas, daemon=True)
@@ -452,25 +545,35 @@ class lattesink:
 
             self.janela.after(0, self._atualizar_log,
                 f"🌐  [{i}/{total}]  Abrindo navegador para ID: {lattes_id}")
-            sucesso = self._screenshot_com_captcha_manual(lattes_id, pasta)
+            resultado = self._screenshot_e_dados_com_captcha_manual(lattes_id, pasta)
 
             # Verifica cancelamento logo após fechar o driver
             if self._cancelar_solicitado:
                 self.janela.after(0, self._finalizar_cancelamento, i, total)
                 return
 
-            if not sucesso:
+            if resultado:
+                self.dados_coletados.append(resultado)
+            else:
                 erros.append(lattes_id)
+                # Adiciona um registro de erro mesmo assim
+                self.dados_coletados.append({
+                    'link_lattes': f'https://lattes.cnpq.br/{lattes_id}',
+                    'id_lattes': lattes_id,
+                    'nome': 'ERRO NA CAPTURA',
+                    'ultima_atualizacao': 'ERRO NA CAPTURA',
+                    'arquivo_screenshot': f'{lattes_id}.png (erro)'
+                })
 
             self.janela.after(0, self._atualizar_progresso, i, total)
 
         self.janela.after(0, self._finalizar_captura, erros, total) # Finaliza normalmente na thread principal
 
-    def _screenshot_com_captcha_manual(self, lattes_id, pasta_destino):
+    def _screenshot_e_dados_com_captcha_manual(self, lattes_id, pasta_destino):
         """
         Abre o navegador visível, aguarda o usuário resolver o CAPTCHA
-        manualmente e salva o screenshot na pasta de destino.
-        Retorna True em caso de sucesso, False em caso de erro.
+        manualmente, extrai os dados da página e salva o screenshot.
+        Retorna um dicionário com os dados ou None em caso de erro.
         """
         options = Options()
         options.add_argument("--window-size=1080,720")
@@ -488,7 +591,7 @@ class lattesink:
             # Espera interruptível: verifica o flag a cada 0,5s durante 20s
             for _ in range(40):
                 if self._cancelar_solicitado:
-                    return False
+                    return None
                 time.sleep(0.5)
 
             # Confirma que a página carregou após o CAPTCHA
@@ -501,20 +604,27 @@ class lattesink:
                     f"⚠️  [{lattes_id}]  Não foi possível confirmar o carregamento da página.")
 
             if self._cancelar_solicitado:
-                return False
+                return None
 
             time.sleep(2)  # Aguarda carregamento completo
 
+            # Extrair os dados da página
+            dados = self._extrair_dados_pagina(driver, lattes_id)
+            
+            # Salvar screenshot
             driver.save_screenshot(caminho_arquivo)
             self.janela.after(0, self._atualizar_log,
                 f"📸  [{lattes_id}]  Screenshot salvo em: {caminho_arquivo}")
-            return True
+            self.janela.after(0, self._atualizar_log,
+                f"📊  [{lattes_id}]  Nome: {dados['nome'][:50]}... | Atualização: {dados['ultima_atualizacao']}")
+
+            return dados
 
         except Exception as e:
             if not self._cancelar_solicitado:
                 self.janela.after(0, self._atualizar_log,
                     f"❌  [{lattes_id}]  Erro: {e}")
-            return False
+            return None
 
         finally:
             try:
@@ -523,11 +633,82 @@ class lattesink:
                 pass
             self._driver_ativo = None
 
+    def exportar_para_excel(self):
+        """Exporta os dados coletados para um arquivo Excel."""
+        if not self.dados_coletados:
+            messagebox.showwarning("Sem dados", "Nenhum dado foi coletado ainda. Execute a captura primeiro.")
+            return
+
+        # Perguntar onde salvar o arquivo Excel
+        arquivo_excel = filedialog.asksaveasfilename(
+            title='Salvar arquivo Excel',
+            defaultextension='.xlsx',
+            filetypes=[("Arquivo Excel", "*.xlsx"), ("Todos os arquivos", "*.*")],
+            initialfile='dados_lattes.xlsx'
+        )
+
+        if not arquivo_excel:
+            return
+
+        try:
+            # Criar planilha
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Currículos Lattes"
+
+            # Estilos
+            header_font = Font(bold=True, color="FFFFFF")
+            header_fill = PatternFill(start_color="4CAF50", end_color="4CAF50", fill_type="solid")
+            center_alignment = Alignment(horizontal="center", vertical="center")
+
+            # Cabeçalhos
+            cabecalhos = ["Link Lattes", "ID Lattes", "Nome do Pesquisador", "Última Atualização"]
+            for col, cabecalho in enumerate(cabecalhos, 1):
+                cell = ws.cell(row=1, column=col, value=cabecalho)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center_alignment
+
+            # Dados
+            for row, dados in enumerate(self.dados_coletados, 2):
+                ws.cell(row=row, column=1, value=dados['link_lattes'])
+                ws.cell(row=row, column=2, value=dados['id_lattes'])
+                ws.cell(row=row, column=3, value=dados['nome'])
+                ws.cell(row=row, column=4, value=dados['ultima_atualizacao'])
+                    
+                # Ajustar alinhamento das células de dados
+                for col in range(1, 5):
+                    ws.cell(row=row, column=col).alignment = center_alignment
+
+            # Ajustar largura das colunas
+            ws.column_dimensions['A'].width = 45  # Link Lattes
+            ws.column_dimensions['B'].width = 20  # ID Lattes
+            ws.column_dimensions['C'].width = 40  # Nome
+            ws.column_dimensions['D'].width = 20  # Data
+
+            # Salvar arquivo
+            wb.save(arquivo_excel)
+            
+            messagebox.showinfo(
+                "Exportação concluída",
+                f"Dados exportados com sucesso para:\n{arquivo_excel}\n\nTotal de registros: {len(self.dados_coletados)}"
+            )
+            
+            self._atualizar_log(f"✅  Dados exportados para Excel: {os.path.basename(arquivo_excel)}")
+
+        except Exception as e:
+            messagebox.showerror("Erro ao exportar", f"Erro ao salvar arquivo Excel:\n{e}")
+            self._atualizar_log(f"❌  Erro ao exportar Excel: {e}")
+
     def _finalizar_captura(self, erros, total):
         """Chamado na thread principal ao terminar todos os IDs com sucesso."""
         self._captura_ativa = False
-        self.btn_iniciar.configure(state="normal", cursor="hand2", text="▶  Iniciar Captura")
+        self.btn_iniciar.configure(state="normal", cursor="hand2", text="Iniciar Captura")
         self.btn_cancelar.configure(state="disabled", cursor="arrow", text="Cancelar")
+        
+        # Habilitar botão de exportar se houver dados
+        if self.dados_coletados:
+            self.btn_exportar.configure(state="normal", cursor="hand2")
 
         if erros:
             self._atualizar_log(f"⚠️  Concluído com erros em {len(erros)} ID(s): {', '.join(erros)}")
@@ -540,7 +721,8 @@ class lattesink:
             self._atualizar_log(f"✅  Todos os {total} screenshots foram salvos com sucesso!")
             messagebox.showinfo(
                 "Captura concluída",
-                f"Todos os {total} screenshots foram salvos com sucesso em:\n{self.pasta_destino.get()}"
+                f"Todos os {total} screenshots foram salvos com sucesso em:\n{self.pasta_destino.get()}\n\n"
+                f"Clique em 'Exportar Excel' para gerar a planilha com os dados coletados."
             )
 
     def _finalizar_cancelamento(self, concluidos, total):
@@ -549,6 +731,10 @@ class lattesink:
         self._cancelar_solicitado = False
         self.btn_cancelar.configure(state="disabled", cursor="arrow", text="Cancelar")
         self.btn_iniciar.configure(state="disabled", cursor="arrow", text="Iniciar Captura")
+        
+        # Habilitar botão de exportar se houver dados coletados até o cancelamento
+        if self.dados_coletados:
+            self.btn_exportar.configure(state="normal", cursor="hand2")
 
         self._atualizar_log(
             f"🛑  Captura cancelada — {concluidos} de {total} ID(s) processados."
@@ -557,6 +743,7 @@ class lattesink:
             "Captura cancelada",
             f"A captura foi cancelada pelo usuário.\n"
             f"{concluidos} de {total} ID(s) foram processados.\n\n"
+            f"Os dados coletados até agora podem ser exportados clicando em 'Exportar Excel'.\n\n"
             f"Selecione um novo arquivo para continuar."
         )
         self._resetar_ids() # Reseta os IDs para forçar nova seleção de arquivo
