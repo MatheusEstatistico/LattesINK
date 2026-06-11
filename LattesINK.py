@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import os, threading, csv, openpyxl, time, re
+from datetime import datetime
+from PIL import Image, ImageDraw, ImageFont
 
 from openpyxl.styles import Font, Alignment, PatternFill
 from selenium import webdriver
@@ -70,7 +72,7 @@ class lattesink:
             text="Pasta",
             width=9,
             command=self.escolher_pasta,
-            bg="#4CAF50", fg="white",
+            bg="#00aca0", fg="white",
             font=("Arial", 9, "bold"),
             padx=8, pady=4,
             cursor="hand2", relief='flat'
@@ -106,7 +108,7 @@ class lattesink:
             text="Lattes ID's",
             width=9,
             command=self.escolher_ids,
-            bg="#4CAF50", fg="white",
+            bg="#00aca0", fg="white",
             font=("Arial", 9, "bold"),
             padx=8, pady=4,
             cursor="hand2", relief='flat'
@@ -161,7 +163,7 @@ class lattesink:
             frame_botoes,
             text="Iniciar Captura",
             command=self.iniciar_captura,
-            bg="#583f20", fg="white",
+            bg="#4CAF50", fg="white",
             font=("Arial", 10, "bold"),
             padx=10, pady=8,
             cursor="arrow", relief='flat',
@@ -173,7 +175,7 @@ class lattesink:
             frame_botoes,
             text="Cancelar",
             command=self.cancelar_captura,
-            bg="#c0392b", fg="white",
+            bg="#d65548", fg="white",
             font=("Arial", 10, "bold"),
             padx=10, pady=8,
             cursor="arrow", relief='flat',
@@ -185,7 +187,7 @@ class lattesink:
             frame_botoes,
             text="Exportar Excel",
             command=self.exportar_para_excel,
-            bg="#2196F3", fg="white",
+            bg="#6ab8f7", fg="white",
             font=("Arial", 10, "bold"),
             padx=10, pady=8,
             cursor="arrow", relief='flat',
@@ -611,8 +613,9 @@ class lattesink:
             # Extrair os dados da página
             dados = self._extrair_dados_pagina(driver, lattes_id)
             
-            # Salvar screenshot
+            # Salvar screenshot e adicionar timestamp
             driver.save_screenshot(caminho_arquivo)
+            self._adicionar_timestamp_screenshot(caminho_arquivo)
             self.janela.after(0, self._atualizar_log,
                 f"📸  [{lattes_id}]  Screenshot salvo em: {caminho_arquivo}")
             self.janela.after(0, self._atualizar_log,
@@ -632,6 +635,48 @@ class lattesink:
             except Exception:
                 pass
             self._driver_ativo = None
+
+    def _adicionar_timestamp_screenshot(self, caminho_arquivo):
+        """
+        Adiciona data e hora no canto inferior direito do screenshot salvo.
+        Sobrescreve o arquivo original com a versão anotada.
+        """
+        try:
+            img = Image.open(caminho_arquivo).convert("RGBA")
+            overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
+            draw = ImageDraw.Draw(overlay)
+
+            texto = datetime.now().strftime("Capturado em: %d/%m/%Y às %H:%M:%S")
+
+            try:
+                fonte = ImageFont.truetype("arialbd.ttf", 25)
+            except IOError:
+                try:
+                    fonte = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 25)
+                except IOError:
+                    fonte = ImageFont.load_default()
+
+            bbox = draw.textbbox((0, 0), texto, font=fonte)
+            largura_texto = bbox[2] - bbox[0]
+            altura_texto = bbox[3] - bbox[1]
+
+            margem = 20
+            padding = 10
+
+            x1 = img.width - largura_texto - (margem * 2) - padding
+            y1 = img.height - altura_texto - (margem * 2) - padding
+            x2 = img.width - margem + padding
+            y2 = img.height - margem + padding
+
+            draw.rectangle([x1, y1, x2, y2], fill=(0, 0, 0, 180))
+            draw.text((x1 + padding, y1 + padding), texto, fill=(255, 255, 255, 255), font=fonte)
+
+            resultado = Image.alpha_composite(img, overlay).convert("RGB")
+            resultado.save(caminho_arquivo)
+
+        except Exception as e:
+            self.janela.after(0, self._atualizar_log,
+                f"⚠️  Não foi possível adicionar timestamp no screenshot: {e}")
 
     def exportar_para_excel(self):
         """Exporta os dados coletados para um arquivo Excel."""
