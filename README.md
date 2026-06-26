@@ -7,4 +7,7 @@ Para transformar o código em um arquivo executável (.exe) basta usar o pacote 
 Exemplo de comando para se executar no terminal: `python -m PyInstaller "LattesINK.py" --onefile -w`
 
 ## Antivirus 
-É comum que antivirus testem falso positivo com arquivos desse tipo. 
+É comum que antivirus testem falso positivo com arquivos desse tipo. Caso isso aconteça, pode-se autorizar o aplicativo nas configurações do antivirus. 
+
+## reCAPTCHA
+Esse aplicativo não pode passar pelo reCAPTCHA, então o usuário tem que resolver manualmente. Caso o usuário tenha acesso ao serviço [](), do próprio CNPQ, é possível solucionar isso.
