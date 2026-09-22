@@ -59,6 +59,20 @@ def salvar_config(config):
         pass  # não lembrar a pasta não é motivo para interromper nada
 
 
+def identificar_app_no_windows():
+    """
+    Rodando pelo python.exe, o Windows agrupa a janela como "Python" e mostra o
+    ícone do Python na barra de tarefas. Com um ID próprio, ele usa o ícone da janela.
+    Precisa ser chamado antes de criar a janela.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LattesInk.Verificador")
+        except Exception:
+            pass
+
+
 def encurtar(texto, limite=50):
     """Corta textos longos, só colocando reticências quando realmente cortou."""
     return texto if len(texto) <= limite else texto[:limite - 1].rstrip() + "…"
@@ -66,6 +80,7 @@ def encurtar(texto, limite=50):
 
 class LattesInk:
     def __init__(self):
+        identificar_app_no_windows()
         self.janela = tk.Tk()
         self.janela.title("Lattes ink")
         self._definir_icone()
@@ -106,7 +121,8 @@ class LattesInk:
 
     def _definir_icone(self):
         try:
-            self.janela.iconbitmap(caminho_recurso("lattes.ico"))
+            # "default=" aplica o ícone também às outras janelas (ex.: seleção de coluna)
+            self.janela.iconbitmap(default=caminho_recurso("lattes.ico"))
         except tk.TclError:
             pass  # sem o arquivo (ou fora do Windows) o programa abre sem ícone
 
