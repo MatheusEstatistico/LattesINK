@@ -1,799 +1,696 @@
+"""
+Lattes Ink: verificador de currículos Lattes (interface gráfica).
+
+A coleta em si (navegador, extração, planilha) fica em coletor.py,
+que precisa estar na mesma pasta deste arquivo.
+"""
+
+import json
+import os
+import queue
+import sys
+import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-
-import os, threading, csv, openpyxl, time, re
+from collections import Counter
 from datetime import datetime
-from PIL import Image, ImageDraw, ImageFont
+from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
 
-from openpyxl.styles import Font, Alignment, PatternFill
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import coletor
 
 
-class lattesink:
+# Cores e fonte
+COR_FUNDO = "#faffff"
+COR_CAIXA = "white"
+COR_PRIMARIA = "#00aca0"
+COR_INICIAR = "#4CAF50"
+COR_CANCELAR = "#d65548"
+COR_EXPORTAR = "#6ab8f7"
+COR_TEXTO = "#333333"
+COR_APAGADO = "gray"
+COR_SUCESSO = "#2e7d32"
+COR_AVISO = "#c0392b"
+FONTE = "Arial"
+
+ARQUIVO_CONFIG = os.path.join(os.path.expanduser("~"), ".lattesink.json")
+INTERVALO_FILA_MS = 100  # de quanto em quanto tempo a janela lê as mensagens da captura
+
+
+def caminho_recurso(nome):
+    """Caminho de um arquivo que fica ao lado do programa (funciona também com PyInstaller)."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, nome)
+
+
+def carregar_config():
+    try:
+        with open(ARQUIVO_CONFIG, encoding="utf-8") as f:
+            dados = json.load(f)
+        return dados if isinstance(dados, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def salvar_config(config):
+    try:
+        with open(ARQUIVO_CONFIG, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass  # não lembrar a pasta não é motivo para interromper nada
+
+
+def encurtar(texto, limite=50):
+    """Corta textos longos, só colocando reticências quando realmente cortou."""
+    return texto if len(texto) <= limite else texto[:limite - 1].rstrip() + "…"
+
+
+class LattesInk:
     def __init__(self):
         self.janela = tk.Tk()
-        self.janela.title('Lattes ink')
-        self.janela.iconbitmap('lattes.ico') # Colocar o caminho do arquivo .ico
-        self.janela.geometry('800x480')
+        self.janela.title("Lattes ink")
+        self._definir_icone()
+        self.janela.geometry("800x660")
         self.janela.resizable(width=False, height=False)
-        self.janela.configure(bg='#faffff')
+        self.janela.configure(bg=COR_FUNDO)
+        self.janela.protocol("WM_DELETE_WINDOW", self._ao_fechar)
 
         # Estado interno
-        self.ids_carregados = []
-        self._captura_ativa = False
-        self._cancelar_solicitado = False
-        self._driver_ativo = None  # Referência ao driver em uso (para fechar ao cancelar)
-        self.dados_coletados = []  # Lista de dicionários com os dados de cada pesquisador
+        self.config = carregar_config()
+        self.pasta_destino = None        # None = nenhuma pasta escolhida
+        self.ids = []                    # IDs válidos, sem repetição
+        self.registros = []              # coletor.Registro de cada ID já processado
+        self.pasta_execucao = None       # subpasta desta captura (captura_AAAA-MM-DD_HHMM)
+        self.arquivo_log = None          # log.txt dentro da subpasta
+        self.pode_continuar = False      # True depois de cancelar com IDs pendentes
+        self.captura_ativa = False
+        self.cancelado = threading.Event()
+        self.coletor = None
+        self.thread = None
+        self.fila = queue.Queue()        # mensagens da thread de captura para a janela
 
-        # Frame principal
-        self.frame_principal = tk.Frame(self.janela, bg='#faffff')
-        self.frame_principal.pack(expand=True, fill='both', padx=20, pady=20)
+        self._montar_interface()
 
-        # Título
-        tk.Label(
-            self.frame_principal,
-            text='Verificador de Currículos Lattes',
-            font=('Arial', 14, 'bold'),
-            bg='#faffff'
-        ).pack(pady=(0, 15))
+        pasta_salva = self.config.get("pasta_destino")
+        if pasta_salva and os.path.isdir(pasta_salva):
+            self._definir_pasta(pasta_salva, lembrar=False)
+            self._log(f"📁  Usando a última pasta escolhida: {pasta_salva}")
+        else:
+            self._log("Pronto. Selecione a pasta de destino e o arquivo com os IDs.")
 
-        # Seção 1: Pasta de destino
-        tk.Label(
-            self.frame_principal,
-            text='1. Selecione a pasta de destino',
-            font=('Arial', 10, 'bold'),
-            bg='#faffff',
-            anchor='w'
-        ).pack(fill='x')
+        self._atualizar_botoes()
+        self._id_fila = self.janela.after(INTERVALO_FILA_MS, self._verificar_fila)
 
-        frame_caminho = tk.Frame(self.frame_principal, bg='white', relief='solid', borderwidth=1)
-        frame_caminho.pack(fill='x', pady=(5, 12))
+    # ------------------------------------------------------------------
+    # Montagem da janela
+    # ------------------------------------------------------------------
 
-        tk.Label(frame_caminho, text="📁", font=("Arial", 18), bg="white").pack(side="left", padx=10, pady=8)
+    def _definir_icone(self):
+        try:
+            self.janela.iconbitmap(caminho_recurso("lattes.ico"))
+        except tk.TclError:
+            pass  # sem o arquivo (ou fora do Windows) o programa abre sem ícone
 
-        self.pasta_destino = tk.StringVar(value="Nenhuma pasta selecionada")
-        self.label_caminho = tk.Label(
-            frame_caminho,
-            textvariable=self.pasta_destino,
-            wraplength=1000,
-            justify="left",
-            bg="white",
-            fg="gray",
-            font=("Arial", 9, 'bold')
+    def _criar_botao(self, pai, texto, comando, cor, tamanho=10, **opcoes):
+        return tk.Button(
+            pai, text=texto, command=comando,
+            bg=cor, fg="white", activebackground=cor, activeforeground="white",
+            font=(FONTE, tamanho, "bold"), relief="flat", cursor="hand2",
+            padx=opcoes.pop("padx", 10), pady=opcoes.pop("pady", 8),
+            **opcoes,
         )
-        self.label_caminho.pack(side="left", padx=5, pady=8, fill="x", expand=True)
 
-        tk.Button(
-            frame_caminho,
-            text="Pasta",
-            width=9,
-            command=self.escolher_pasta,
-            bg="#00aca0", fg="white",
-            font=("Arial", 9, "bold"),
-            padx=8, pady=4,
-            cursor="hand2", relief='flat'
-        ).pack(side="right", padx=10, pady=8)
+    @staticmethod
+    def _ativar(botao, ativo):
+        botao.configure(state="normal" if ativo else "disabled",
+                        cursor="hand2" if ativo else "arrow")
 
-        # Seção 2: Arquivo de IDs
-        tk.Label(
-            self.frame_principal,
-            text='2. Envie o arquivo com os Lattes IDs (.txt, .xlsx ou .csv)',
-            font=('Arial', 10, 'bold'),
-            bg='#faffff',
-            anchor='w'
-        ).pack(fill='x')
+    def _titulo_secao(self, pai, texto):
+        tk.Label(pai, text=texto, font=(FONTE, 10, "bold"), bg=COR_FUNDO,
+                 anchor="w").pack(fill="x")
 
-        frame_ids = tk.Frame(self.frame_principal, bg='white', relief='solid', borderwidth=1)
-        frame_ids.pack(fill='x', pady=(5, 12))
+    def _caixa_arquivo(self, pai, icone, texto_inicial, texto_botao, comando):
+        """Caixa branca com ícone, texto e botão à direita. Retorna (label, botão)."""
+        caixa = tk.Frame(pai, bg=COR_CAIXA, relief="solid", borderwidth=1)
+        caixa.pack(fill="x", pady=(5, 12))
 
-        tk.Label(frame_ids, text="📄", font=("Arial", 18), bg="white").pack(side="left", padx=10, pady=8)
+        tk.Label(caixa, text=icone, font=(FONTE, 18), bg=COR_CAIXA).pack(side="left", padx=10, pady=8)
+        botao = self._criar_botao(caixa, texto_botao, comando, COR_PRIMARIA,
+                                  tamanho=9, width=9, padx=8, pady=4)
+        botao.pack(side="right", padx=10, pady=8)
+        label = tk.Label(caixa, text=texto_inicial, wraplength=560, justify="left",
+                         anchor="w", bg=COR_CAIXA, fg=COR_APAGADO, font=(FONTE, 9, "bold"))
+        label.pack(side="left", padx=5, pady=8, fill="x", expand=True)
+        return label, botao
 
-        self.ids_status_var = tk.StringVar(value="Nenhum arquivo selecionado")
-        self.label_ids_status = tk.Label(
-            frame_ids,
-            textvariable=self.ids_status_var,
-            justify="left",
-            bg="white",
-            fg="gray",
-            font=("Arial", 9, 'bold')
-        )
-        self.label_ids_status.pack(side="left", padx=5, pady=8, fill="x", expand=True)
+    def _montar_interface(self):
+        principal = tk.Frame(self.janela, bg=COR_FUNDO)
+        principal.pack(expand=True, fill="both", padx=20, pady=16)
 
-        tk.Button(
-            frame_ids,
-            text="Lattes ID's",
-            width=9,
-            command=self.escolher_ids,
-            bg="#00aca0", fg="white",
-            font=("Arial", 9, "bold"),
-            padx=8, pady=4,
-            cursor="hand2", relief='flat'
-        ).pack(side="right", padx=10, pady=8)
+        tk.Label(principal, text="Verificador de Currículos Lattes",
+                 font=(FONTE, 14, "bold"), bg=COR_FUNDO).pack(pady=(0, 12))
 
-        # Seção 3: Progresso
-        tk.Label(
-            self.frame_principal,
-            text='3. Progresso da captura',
-            font=('Arial', 10, 'bold'),
-            bg='#faffff',
-            anchor='w'
-        ).pack(fill='x')
+        # 1. Pasta de destino
+        self._titulo_secao(principal, "1. Selecione a pasta de destino")
+        self.label_pasta, self.btn_pasta = self._caixa_arquivo(
+            principal, "📁", "Nenhuma pasta selecionada", "Pasta", self.escolher_pasta)
 
-        frame_progresso = tk.Frame(self.frame_principal, bg='#faffff')
-        frame_progresso.pack(fill='x', pady=(5, 12))
+        # 2. Arquivo de IDs
+        self._titulo_secao(principal, "2. Envie o arquivo com os Lattes IDs (.txt, .xlsx ou .csv)")
+        self.label_ids, self.btn_ids = self._caixa_arquivo(
+            principal, "📄", "Nenhum arquivo selecionado", "Lattes ID's", self.escolher_ids)
+
+        # 3. Progresso
+        self._titulo_secao(principal, "3. Progresso da captura")
+        frame_progresso = tk.Frame(principal, bg=COR_FUNDO)
+        frame_progresso.pack(fill="x", pady=(5, 8))
 
         self.progresso_var = tk.DoubleVar(value=0)
-        self.barra_progresso = ttk.Progressbar(
-            frame_progresso,
-            variable=self.progresso_var,
-            maximum=100,
-            length=560
-        )
-        self.barra_progresso.pack(side='left', fill='x', expand=True)
+        ttk.Progressbar(frame_progresso, variable=self.progresso_var,
+                        maximum=100).pack(side="left", fill="x", expand=True)
+        self.label_progresso = tk.Label(frame_progresso, text="0 / 0", font=(FONTE, 9, "bold"),
+                                        bg=COR_FUNDO, width=9)
+        self.label_progresso.pack(side="left", padx=(8, 0))
 
-        self.label_progresso = tk.Label(
-            frame_progresso,
-            text="0 / 0",
-            font=("Arial", 9, "bold"),
-            bg='#faffff',
-            width=8
-        )
-        self.label_progresso.pack(side='left', padx=(8, 0))
+        # Log com histórico (somente leitura)
+        self.caixa_log = ScrolledText(principal, height=10, font=(FONTE, 9), wrap="word",
+                                      bg=COR_CAIXA, fg=COR_TEXTO, relief="solid",
+                                      borderwidth=1, state="disabled")
+        self.caixa_log.pack(fill="both", expand=True, pady=(0, 12))
 
-        # Log de status
-        self.log_var = tk.StringVar(value="Aguardando início...")
-        tk.Label(
-            self.frame_principal,
-            textvariable=self.log_var,
-            font=("Arial", 9),
-            bg='#faffff',
-            fg='#333333',
-            anchor='w'
-        ).pack(fill='x', pady=(0, 10))
-
-        # Botões de ação (iniciar + cancelar + exportar)
-        frame_botoes = tk.Frame(self.frame_principal, bg='#faffff')
+        # Botões de ação
+        frame_botoes = tk.Frame(principal, bg=COR_FUNDO)
         frame_botoes.pack()
 
-        self.btn_iniciar = tk.Button(
-            frame_botoes,
-            text="Iniciar Captura",
-            command=self.iniciar_captura,
-            bg="#4CAF50", fg="white",
-            font=("Arial", 10, "bold"),
-            padx=10, pady=8,
-            cursor="arrow", relief='flat',
-            state="disabled"
-        )
+        self.btn_iniciar = self._criar_botao(frame_botoes, "Iniciar Captura",
+                                             self.iniciar_captura, COR_INICIAR)
         self.btn_iniciar.pack(side="left", padx=(0, 8))
-
-        self.btn_cancelar = tk.Button(
-            frame_botoes,
-            text="Cancelar",
-            command=self.cancelar_captura,
-            bg="#d65548", fg="white",
-            font=("Arial", 10, "bold"),
-            padx=10, pady=8,
-            cursor="arrow", relief='flat',
-            state="disabled"
-        )
+        self.btn_cancelar = self._criar_botao(frame_botoes, "Cancelar",
+                                              self.cancelar_captura, COR_CANCELAR)
         self.btn_cancelar.pack(side="left", padx=(0, 8))
-        
-        self.btn_exportar = tk.Button(
-            frame_botoes,
-            text="Exportar Excel",
-            command=self.exportar_para_excel,
-            bg="#6ab8f7", fg="white",
-            font=("Arial", 10, "bold"),
-            padx=10, pady=8,
-            cursor="arrow", relief='flat',
-            state="disabled"
-        )
+        self.btn_exportar = self._criar_botao(frame_botoes, "Exportar Excel",
+                                              self.exportar_para_excel, COR_EXPORTAR)
         self.btn_exportar.pack(side="left")
 
-    # Métodos de UI
+    def _centralizar(self, janela, largura, altura):
+        self.janela.update_idletasks()
+        x = self.janela.winfo_rootx() + (self.janela.winfo_width() - largura) // 2
+        y = self.janela.winfo_rooty() + (self.janela.winfo_height() - altura) // 2
+        janela.geometry(f"{largura}x{altura}+{max(x, 0)}+{max(y, 0)}")
+
+    # ------------------------------------------------------------------
+    # Estado da interface
+    # ------------------------------------------------------------------
+
+    def _pendentes(self):
+        feitos = {r.id_lattes for r in self.registros}
+        return [i for i in self.ids if i not in feitos]
+
+    def _atualizar_botoes(self):
+        """Único lugar que decide quais botões ficam ativos."""
+        capturando = self.captura_ativa
+        cancelando = capturando and self.cancelado.is_set()
+
+        # Durante a captura não dá para trocar a pasta nem os IDs
+        self._ativar(self.btn_pasta, not capturando)
+        self._ativar(self.btn_ids, not capturando)
+        self._ativar(self.btn_exportar, not capturando and bool(self.registros))
+        self._ativar(self.btn_cancelar, capturando and not cancelando)
+        self.btn_cancelar.configure(text="Cancelando..." if cancelando else "Cancelar")
+
+        if capturando:
+            self.btn_iniciar.configure(text="⏳  Capturando...")
+            self._ativar(self.btn_iniciar, False)
+            return
+
+        pendentes = self._pendentes()
+        if self.pode_continuar and pendentes:
+            self.btn_iniciar.configure(text=f"▶  Continuar ({len(pendentes)} restantes)")
+        else:
+            self.btn_iniciar.configure(text="Iniciar Captura")
+        self._ativar(self.btn_iniciar, bool(self.pasta_destino and self.ids))
+
+    def _atualizar_progresso(self):
+        total, feitos = len(self.ids), len(self.registros)
+        self.progresso_var.set(feitos / total * 100 if total else 0)
+        self.label_progresso.configure(text=f"{feitos} / {total}")
+
+    def _encerrar_execucao(self):
+        """Esquece a captura anterior: a próxima começa do zero, em uma subpasta nova."""
+        self.pode_continuar = False
+        self.pasta_execucao = None
+        self.arquivo_log = None
+
+    def _log(self, mensagem):
+        """Acrescenta uma linha ao log da janela e ao log.txt da captura."""
+        agora = datetime.now()
+        self.caixa_log.configure(state="normal")
+        self.caixa_log.insert(tk.END, f"[{agora:%H:%M:%S}]  {mensagem}\n")
+        self.caixa_log.see(tk.END)
+        self.caixa_log.configure(state="disabled")
+
+        if self.arquivo_log:
+            try:
+                with open(self.arquivo_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{agora:%d/%m/%Y %H:%M:%S}]  {mensagem}\n")
+            except OSError:
+                pass
+
+    # ------------------------------------------------------------------
+    # 1. Pasta de destino
+    # ------------------------------------------------------------------
+
     def escolher_pasta(self):
         pasta = filedialog.askdirectory(
-            title='Escolha a pasta onde os arquivos serão salvos',
-            initialdir=os.path.expanduser('~')
+            title="Escolha a pasta onde os arquivos serão salvos",
+            initialdir=self.pasta_destino or os.path.expanduser("~"),
         )
         if pasta:
-            self.pasta_destino.set(pasta)
-            self.label_caminho.configure(fg="black")
-            self._atualizar_btn_iniciar()
+            self._definir_pasta(pasta)
+
+    def _definir_pasta(self, pasta, lembrar=True):
+        if pasta != self.pasta_destino:
+            self._encerrar_execucao()
+        self.pasta_destino = pasta
+        self.label_pasta.configure(text=pasta, fg="black")
+        if lembrar:
+            self.config["pasta_destino"] = pasta
+            salvar_config(self.config)
+        self._atualizar_botoes()
+
+    # ------------------------------------------------------------------
+    # 2. Arquivo de IDs
+    # ------------------------------------------------------------------
 
     def escolher_ids(self):
-        pasta = self.pasta_destino.get()
-        if pasta == "Nenhuma pasta selecionada" or not os.path.exists(pasta):
+        if not self.pasta_destino or not os.path.isdir(self.pasta_destino):
             messagebox.showwarning("Atenção", "Selecione a pasta de destino antes de carregar os IDs.")
             return
 
         arquivo = filedialog.askopenfilename(
-            title='Selecione o arquivo com os Lattes IDs',
-            initialdir=os.path.expanduser('~'),
+            title="Selecione o arquivo com os Lattes IDs",
+            initialdir=self.config.get("pasta_ids") or os.path.expanduser("~"),
             filetypes=[
                 ("Todos os formatos suportados", "*.txt *.xlsx *.csv"),
                 ("Arquivo de texto", "*.txt"),
                 ("Planilha Excel", "*.xlsx"),
                 ("Arquivo CSV", "*.csv"),
-                ("Todos os arquivos", "*.*")
-            ]
+                ("Todos os arquivos", "*.*"),
+            ],
         )
         if not arquivo:
             return
 
-        ext = os.path.splitext(arquivo)[1].lower()
+        self.config["pasta_ids"] = os.path.dirname(arquivo)
+        salvar_config(self.config)
 
-        if ext == '.txt':
-            ids = self._ler_ids_txt(arquivo)
-            if ids is not None:
-                self._aplicar_ids(ids, arquivo)
-        elif ext in ('.xlsx', '.csv'):
-            self._abrir_seletor_coluna(arquivo, ext)
+        extensao = os.path.splitext(arquivo)[1].lower()
+        if extensao == ".txt":
+            try:
+                valores = coletor.ler_ids_txt(arquivo)
+            except Exception as erro:
+                messagebox.showerror("Erro ao ler arquivo", f"Não foi possível ler o arquivo:\n{erro}")
+                return
+            self._aplicar_ids(valores, arquivo)
+        elif extensao in (".xlsx", ".csv"):
+            self._abrir_seletor_coluna(arquivo)
         else:
             messagebox.showerror("Formato não suportado", "Use arquivos .txt, .xlsx ou .csv.")
 
-    def _ler_ids_txt(self, arquivo):
-        """Lê IDs de um arquivo .txt (um por linha). Retorna lista ou None em caso de erro."""
-        try:
-            with open(arquivo, 'r', encoding='utf-8') as f:
-                ids = [linha.strip() for linha in f if linha.strip()]
-        except Exception as e:
-            messagebox.showerror("Erro ao ler arquivo", f"Não foi possível ler o arquivo:\n{e}")
-            return None
+    def _aplicar_ids(self, valores, arquivo, parent=None):
+        """Valida os valores lidos e, se o usuário concordar, passa a usá-los. Retorna True se aplicou."""
+        parent = parent or self.janela
+        ids, invalidos, duplicados = coletor.normalizar_ids(valores)
+
         if not ids:
-            messagebox.showwarning("Arquivo vazio", "O arquivo não contém nenhum ID.")
-            return None
-        return ids
+            messagebox.showwarning(
+                "Nenhum ID válido",
+                "Não encontrei nenhum ID Lattes (16 dígitos) nos dados selecionados.",
+                parent=parent)
+            return False
 
-    def _aplicar_ids(self, ids, arquivo):
-        """Registra a lista de IDs e atualiza a interface."""
-        self.ids_carregados = ids
-        self.dados_coletados = []  # Reseta os dados coletados
-        self.ids_status_var.set(f"✅  {len(ids)} ID(s) carregado(s)  —  {os.path.basename(arquivo)}")
-        self.label_ids_status.configure(fg="#2e7d32")
-        self.label_progresso.configure(text=f"0 / {len(ids)}")
-        self.btn_exportar.configure(state="disabled")
-        self._atualizar_btn_iniciar()
+        if invalidos or duplicados:
+            partes = [f"{len(ids)} ID(s) válido(s) encontrado(s)."]
+            if duplicados:
+                partes.append(f"{duplicados} ID(s) repetido(s) foram removidos.")
+            if invalidos:
+                amostra = "\n".join(f"  • {encurtar(v, 60)}" for v in invalidos[:10])
+                if len(invalidos) > 10:
+                    amostra += f"\n  … e mais {len(invalidos) - 10}"
+                partes.append(f"{len(invalidos)} valor(es) não são IDs Lattes válidos "
+                              f"e serão ignorados:\n{amostra}")
+            if not messagebox.askokcancel(
+                    "Conferir IDs", "\n\n".join(partes) + "\n\nContinuar com os IDs válidos?",
+                    parent=parent):
+                return False
 
-    def _ler_colunas_arquivo(self, arquivo, ext):
-        """
-        Retorna (colunas, dados) onde:
-          - colunas: lista de nomes das colunas (str)
-          - dados: lista de listas com os valores de cada coluna
-        """
-        if ext == '.xlsx':
-            wb = openpyxl.load_workbook(arquivo, read_only=True, data_only=True)
-            ws = wb.active
-            linhas = list(ws.iter_rows(values_only=True))
-            wb.close()
-            if not linhas:
-                return [], []
-            cabecalho = [str(c) if c is not None else f"Coluna {i+1}"
-                         for i, c in enumerate(linhas[0])]
-            dados = [[str(row[i]) if row[i] is not None else ""
-                      for row in linhas[1:]]
-                     for i in range(len(cabecalho))]
-            return cabecalho, dados
-        else:  # .csv
-            with open(arquivo, newline='', encoding='utf-8-sig') as f:
-                leitor = csv.reader(f)
-                linhas = list(leitor)
-            if not linhas:
-                return [], []
-            cabecalho = [str(c).strip() if c else f"Coluna {i+1}"
-                         for i, c in enumerate(linhas[0])]
-            dados = [[row[i].strip() if i < len(row) else ""
-                      for row in linhas[1:]]
-                     for i in range(len(cabecalho))]
-            return cabecalho, dados
+        self.ids = ids
+        self.registros = []
+        self._encerrar_execucao()
 
-    def _abrir_seletor_coluna(self, arquivo, ext):
-        """Abre uma janela modal para o usuário escolher qual coluna contém os IDs."""
+        texto = f"✅  {len(ids)} ID(s) carregado(s)  —  {os.path.basename(arquivo)}"
+        ignorados = len(invalidos) + duplicados
+        if ignorados:
+            texto += f"  ({ignorados} ignorado(s))"
+        self.label_ids.configure(text=texto, fg=COR_SUCESSO)
+        self._log(f"📄  {len(ids)} ID(s) carregado(s) de {os.path.basename(arquivo)}")
+        self._atualizar_progresso()
+        self._atualizar_botoes()
+        return True
+
+    def _abrir_seletor_coluna(self, arquivo):
+        """Janela modal para escolher qual coluna do .xlsx/.csv contém os IDs."""
         try:
-            colunas, dados = self._ler_colunas_arquivo(arquivo, ext)
-        except Exception as e:
-            messagebox.showerror("Erro ao ler arquivo", f"Não foi possível ler o arquivo:\n{e}")
+            colunas = coletor.ler_colunas(arquivo)
+        except Exception as erro:
+            messagebox.showerror("Erro ao ler arquivo", f"Não foi possível ler o arquivo:\n{erro}")
             return
-
         if not colunas:
             messagebox.showwarning("Arquivo vazio", "O arquivo não contém dados.")
             return
 
-        # Janela modal
+        validos = [len(coletor.normalizar_ids(c.valores)[0]) for c in colunas]
+
         modal = tk.Toplevel(self.janela)
         modal.title("Selecionar coluna dos IDs")
-        modal.geometry("420x340")
         modal.resizable(False, False)
-        modal.configure(bg="#faffff")
-        modal.grab_set()  # Bloqueia a janela principal enquanto modal estiver aberta
+        modal.configure(bg=COR_FUNDO)
+        modal.transient(self.janela)
+        self._centralizar(modal, 460, 420)
+        modal.grab_set()  # bloqueia a janela principal enquanto a modal estiver aberta
 
-        tk.Label(
-            modal,
-            text="Selecione a coluna que contém os Lattes IDs:",
-            font=("Arial", 10, "bold"),
-            bg="#faffff"
-        ).pack(pady=(18, 6), padx=16, anchor="w")
+        tk.Label(modal, text="Selecione a coluna que contém os Lattes IDs:",
+                 font=(FONTE, 10, "bold"), bg=COR_FUNDO).pack(pady=(18, 6), padx=16, anchor="w")
 
-        # Frame com lista + scrollbar
-        frame_lista = tk.Frame(modal, bg="#faffff")
+        frame_lista = tk.Frame(modal, bg=COR_FUNDO)
         frame_lista.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        barra = tk.Scrollbar(frame_lista)
+        barra.pack(side="right", fill="y")
+        lista = tk.Listbox(frame_lista, yscrollcommand=barra.set, font=(FONTE, 10),
+                           selectmode="single", activestyle="dotbox", height=7)
+        for coluna, qtd in zip(colunas, validos):
+            lista.insert(tk.END, f"{coluna.nome}   ({qtd} ID(s) válido(s))")
+        lista.pack(side="left", fill="both", expand=True)
+        barra.config(command=lista.yview)
 
-        scrollbar = tk.Scrollbar(frame_lista)
-        scrollbar.pack(side="right", fill="y")
+        # Já deixa selecionada a coluna com mais IDs válidos
+        melhor = max(range(len(colunas)), key=lambda i: validos[i])
+        lista.selection_set(melhor)
+        lista.activate(melhor)
+        lista.see(melhor)
 
-        listbox = tk.Listbox(
-            frame_lista,
-            yscrollcommand=scrollbar.set,
-            font=("Arial", 10),
-            selectmode="single",
-            activestyle="dotbox",
-            height=8
-        )
-        for col in colunas:
-            listbox.insert(tk.END, col)
-        listbox.pack(side="left", fill="both", expand=True)
-        listbox.selection_set(0)  # pré-seleciona a primeira coluna
-        scrollbar.config(command=listbox.yview)
+        lbl_previa = tk.Label(modal, font=(FONTE, 8), fg="#555", bg=COR_FUNDO,
+                              anchor="w", justify="left", wraplength=420)
+        lbl_previa.pack(padx=16, fill="x")
+        lbl_alerta = tk.Label(modal, font=(FONTE, 8, "bold"), fg=COR_AVISO, bg=COR_FUNDO,
+                              anchor="w", justify="left", wraplength=420)
+        lbl_alerta.pack(padx=16, fill="x")
+        tk.Label(modal, font=(FONTE, 8), fg="#555", bg=COR_FUNDO, anchor="w", justify="left",
+                 wraplength=420,
+                 text="Dica: no Excel, formate a coluna dos IDs como Texto antes de digitar ou "
+                      "colar. Como Número, o Excel guarda só 15 dígitos e troca o último "
+                      "dígito do ID por zero.").pack(padx=16, pady=(6, 0), fill="x")
 
-        # Preview dos primeiros valores da coluna selecionada
-        lbl_preview = tk.Label(
-            modal,
-            text="",
-            font=("Arial", 8),
-            fg="#555",
-            bg="#faffff",
-            anchor="w",
-            wraplength=390
-        )
-        lbl_preview.pack(padx=16, fill="x")
+        def coluna_selecionada():
+            selecao = lista.curselection()
+            return colunas[selecao[0]] if selecao else None
 
-        def _atualizar_preview(*_):
-            sel = listbox.curselection()
-            if not sel:
+        def atualizar_previa(*_):
+            coluna = coluna_selecionada()
+            if coluna is None:
                 return
-            idx = sel[0]
-            amostra = [v for v in dados[idx] if v][:5]
-            lbl_preview.configure(
-                text="Prévia: " + ",  ".join(amostra) if amostra else "Prévia: (sem dados)"
-            )
+            amostra = [v for v in coluna.valores if v][:5]
+            lbl_previa.configure(text="Prévia: " + (",  ".join(amostra) if amostra else "(sem dados)"))
+            lbl_alerta.configure(
+                text="⚠️  Esta coluna tem IDs salvos como número no Excel: "
+                     "o último dígito pode estar errado." if coluna.tem_numeros_grandes else "")
 
-        listbox.bind("<<ListboxSelect>>", _atualizar_preview)
-        _atualizar_preview()  # mostra prévia inicial
-
-        # Botões Confirmar / Cancelar
-        frame_btns = tk.Frame(modal, bg="#faffff")
-        frame_btns.pack(pady=(4, 14))
-
-        def _confirmar():
-            sel = listbox.curselection()
-            if not sel:
+        def confirmar(*_):
+            coluna = coluna_selecionada()
+            if coluna is None:
                 messagebox.showwarning("Atenção", "Selecione uma coluna.", parent=modal)
                 return
-            idx = sel[0]
-            ids = [v for v in dados[idx] if v]
-            if not ids:
-                messagebox.showwarning("Coluna vazia",
-                    "A coluna selecionada não contém nenhum ID.", parent=modal)
+            if coluna.tem_numeros_grandes and not messagebox.askyesno(
+                    "IDs possivelmente errados",
+                    "Esta coluna tem IDs salvos como número. O Excel guarda só 15 dígitos, "
+                    "então o último dígito pode ter virado zero e o programa abriria o "
+                    "currículo errado.\n\nO ideal é formatar a coluna como Texto e colar os "
+                    "IDs de novo.\n\nUsar esta coluna mesmo assim?",
+                    icon="warning", parent=modal):
                 return
-            modal.destroy()
-            self._aplicar_ids(ids, arquivo)
+            if self._aplicar_ids(coluna.valores, arquivo, parent=modal):
+                modal.destroy()
 
-        tk.Button(
-            frame_btns, text="Confirmar", command=_confirmar,
-            bg="#4CAF50", fg="white", font=("Arial", 10, "bold"),
-            padx=12, pady=6, relief="flat", cursor="hand2"
-        ).pack(side="left", padx=(0, 10))
+        lista.bind("<<ListboxSelect>>", atualizar_previa)
+        lista.bind("<Double-Button-1>", confirmar)
+        atualizar_previa()
 
-        tk.Button(
-            frame_btns, text="Cancelar", command=modal.destroy,
-            bg="#c0392b", fg="white", font=("Arial", 10, "bold"),
-            padx=12, pady=6, relief="flat", cursor="hand2"
-        ).pack(side="left")
+        frame_botoes = tk.Frame(modal, bg=COR_FUNDO)
+        frame_botoes.pack(pady=(10, 14))
+        self._criar_botao(frame_botoes, "Confirmar", confirmar, COR_INICIAR,
+                          padx=12, pady=6).pack(side="left", padx=(0, 10))
+        self._criar_botao(frame_botoes, "Cancelar", modal.destroy, COR_CANCELAR,
+                          padx=12, pady=6).pack(side="left")
 
-    def _atualizar_btn_iniciar(self):
-        pasta_ok = (
-            self.pasta_destino.get() != "Nenhuma pasta selecionada"
-            and os.path.exists(self.pasta_destino.get())
-        )
-        ids_ok = len(self.ids_carregados) > 0
-        if pasta_ok and ids_ok:
-            self.btn_iniciar.configure(state="normal", cursor="hand2")
-        else:
-            self.btn_iniciar.configure(state="disabled", cursor="arrow")
+    # ------------------------------------------------------------------
+    # 3. Captura
+    # ------------------------------------------------------------------
 
-    def _atualizar_log(self, mensagem):
-        """Atualiza o log de status na thread principal."""
-        self.log_var.set(mensagem)
-
-    def _atualizar_progresso(self, atual, total):
-        """Atualiza a barra e o contador na thread principal."""
-        self.progresso_var.set((atual / total) * 100)
-        self.label_progresso.configure(text=f"{atual} / {total}")
-
-    def _resetar_ids(self):
-        """Limpa os IDs carregados e pede que o usuário selecione um novo arquivo."""
-        self.ids_carregados = []
-        self.dados_coletados = []
-        self.ids_status_var.set("Nenhum arquivo selecionado")
-        self.label_ids_status.configure(fg="gray")
-        self.label_progresso.configure(text="0 / 0")
-        self.progresso_var.set(0)
-        self.btn_exportar.configure(state="disabled")
-        self._atualizar_btn_iniciar()
-
-    def _extrair_dados_pagina(self, driver, lattes_id):
-        """
-        Extrai nome, ID e data da última atualização da página do Lattes.
-        Retorna um dicionário com os dados ou None em caso de erro.
-        """
-        try:
-            # Construir o link do Lattes
-            link_lattes = f'https://lattes.cnpq.br/{lattes_id}'
-
-            # Tentar encontrar o nome do pesquisador
-            nome = "Não encontrado"
-            try:
-                # O nome geralmente está em um elemento com classe 'nome' ou em um h1/h2
-                elementos_nome = driver.find_elements(By.CSS_SELECTOR, "h1, h2, .nome, .nome-pesquisador")
-                for elem in elementos_nome:
-                    texto = elem.text.strip()
-                    if texto and len(texto) > 3:  # Nome tem pelo menos alguns caracteres
-                        nome = texto
-                        break
-                
-                # Se não encontrou, tenta por XPath mais genérico
-                if nome == "Não encontrado":
-                    xpath_nome = "//div[contains(@class, 'nome')] | //div[contains(@class, 'titulo')] | //h1 | //h2"
-                    elementos_nome = driver.find_elements(By.XPATH, xpath_nome)
-                    for elem in elementos_nome:
-                        texto = elem.text.strip()
-                        if texto and len(texto) > 3:
-                            nome = texto
-                            break
-            except Exception:
-                pass
-
-            # Tentar encontrar a data da última atualização
-            data_atualizacao = "Não encontrada"
-            try:
-                # Padrões comuns de texto para data de atualização
-                padroes = [
-                    r"Última atualização[:\s]+(\d{2}/\d{2}/\d{4})",
-                    r"atualizado[:\s]+(\d{2}/\d{2}/\d{4})",
-                    r"Atualizado[:\s]+(\d{2}/\d{2}/\d{4})",
-                    r"Data da última atualização[:\s]+(\d{2}/\d{2}/\d{4})",
-                    r"(\d{2}/\d{2}/\d{4})"
-                ]
-                
-                # Pega o texto da página
-                page_text = driver.find_element(By.TAG_NAME, "body").text
-                
-                for padrao in padroes:
-                    match = re.search(padrao, page_text)
-                    if match:
-                        data_atualizacao = match.group(1)
-                        break
-                        
-            except Exception:
-                pass
-
-            return {
-                'link_lattes': link_lattes,
-                'id_lattes': lattes_id,
-                'nome': nome,
-                'ultima_atualizacao': data_atualizacao,
-                'arquivo_screenshot': f'{lattes_id}.png'
-            }
-
-        except Exception as e:
-            self.janela.after(0, self._atualizar_log, f"⚠️  [{lattes_id}]  Erro ao extrair dados: {e}")
-            return {
-                'id_lattes': lattes_id,
-                'nome': 'Erro na extração',
-                'ultima_atualizacao': 'Erro na extração',
-                'arquivo_screenshot': f'{lattes_id}.png'
-            }
-
-    # Captura de tela
     def iniciar_captura(self):
-        """Dispara a captura em uma thread separada para não travar a janela."""
-        if self._captura_ativa:
+        """Inicia (ou retoma) a captura em uma thread separada para não travar a janela."""
+        if self.captura_ativa or not self.ids or not self.pasta_destino:
+            return
+        if not os.path.isdir(self.pasta_destino):
+            messagebox.showerror("Pasta não encontrada",
+                                 f"A pasta de destino não existe mais:\n{self.pasta_destino}")
             return
 
-        self._captura_ativa = True
-        self._cancelar_solicitado = False
-        self.dados_coletados = []  # Reseta os dados coletados
-        self.btn_iniciar.configure(state="disabled", cursor="arrow", text="⏳  Capturando...")
-        self.btn_cancelar.configure(state="normal", cursor="hand2", text="Cancelar")
-        self.btn_exportar.configure(state="disabled")
-        self.progresso_var.set(0)
+        retomando = self.pode_continuar and self.pasta_execucao and os.path.isdir(self.pasta_execucao)
+        if retomando:
+            pendentes = self._pendentes()
+            self._log(f"▶  Retomando a captura: faltam {len(pendentes)} ID(s).")
+        else:
+            try:
+                self.pasta_execucao = coletor.criar_pasta_execucao(self.pasta_destino)
+            except OSError as erro:
+                messagebox.showerror("Erro", f"Não foi possível criar a pasta da captura:\n{erro}")
+                return
+            self.registros = []
+            pendentes = list(self.ids)
+            self.arquivo_log = os.path.join(self.pasta_execucao, coletor.NOME_LOG)
+            self._log(f"📁  Nova captura de {len(pendentes)} ID(s) em: {self.pasta_execucao}")
 
-        thread = threading.Thread(target=self._executar_capturas, daemon=True)
-        thread.start()
+        self.pode_continuar = False
+        self.cancelado.clear()
+        self.captura_ativa = True
+        self.coletor = coletor.ColetorLattes(self.cancelado,
+                                             log=lambda msg: self.fila.put(("log", msg)))
+        self._atualizar_progresso()
+        self._atualizar_botoes()
+
+        # Tudo o que a thread precisa vai por argumento: ela não lê nada do Tkinter
+        self.thread = threading.Thread(
+            target=self._executar_capturas,
+            args=(pendentes, self.pasta_execucao, self.coletor, len(self.registros), len(self.ids)),
+            daemon=True,
+        )
+        self.thread.start()
+
+    def _executar_capturas(self, pendentes, pasta_execucao, coletor_, ja_feitos, total):
+        """
+        Roda em segundo plano. Não toca em nenhum widget: tudo o que a janela
+        precisa saber vai pela fila (self.fila), lida na thread principal.
+        """
+        caminho_csv = os.path.join(pasta_execucao, coletor.NOME_CSV)
+        motivo, detalhe = "concluido", ""
+        try:
+            for posicao, lattes_id in enumerate(pendentes, start=ja_feitos + 1):
+                if self.cancelado.is_set():
+                    motivo = "cancelado"
+                    break
+                self.fila.put(("log", f"🌐  [{posicao}/{total}]  Abrindo o currículo {lattes_id}"))
+                registro = coletor_.capturar(lattes_id, pasta_execucao)
+                try:
+                    coletor.acrescentar_csv(registro, caminho_csv)
+                except OSError as erro:
+                    self.fila.put(("log", "⚠️  Não foi possível gravar o CSV de backup "
+                                          f"(ele está aberto no Excel?): {erro}"))
+                self.fila.put(("registro", registro))
+        except coletor.CapturaCancelada:
+            motivo = "cancelado"
+        except coletor.ErroNavegador as erro:
+            motivo, detalhe = "erro", f"Não foi possível abrir o Chrome:\n{erro}"
+        except Exception as erro:
+            motivo, detalhe = "erro", f"Erro inesperado: {coletor.resumir_erro(erro)}"
+        finally:
+            coletor_.fechar()
+            self.fila.put(("fim", (motivo, detalhe)))
 
     def cancelar_captura(self):
-        """Solicita o cancelamento da captura em andamento."""
-        if not self._captura_ativa:
+        if not self.captura_ativa or self.cancelado.is_set():
             return
+        self.cancelado.set()
+        self._atualizar_botoes()
+        self._log("🛑  Cancelamento solicitado. Fechando o navegador...")
+        # Fechar o Chrome interrompe na hora o que a thread estiver esperando.
+        # É feito em outra thread para a janela não congelar enquanto ele fecha.
+        if self.coletor:
+            threading.Thread(target=self.coletor.fechar, daemon=True).start()
 
-        self._cancelar_solicitado = True
-        self.btn_cancelar.configure(state="disabled", cursor="arrow", text="Cancelando...")
-        self._atualizar_log("🛑  Cancelamento solicitado — aguardando fechar o navegador atual...")
+    # --- mensagens vindas da thread ------------------------------------
 
-        # Fecha o driver ativo imediatamente, interrompendo o sleep/wait em curso
-        if self._driver_ativo:
+    def _verificar_fila(self):
+        self._processar_fila()
+        self._id_fila = self.janela.after(INTERVALO_FILA_MS, self._verificar_fila)
+
+    def _processar_fila(self, incluir_fim=True):
+        while True:
             try:
-                self._driver_ativo.quit()
-            except Exception:
-                pass
-            self._driver_ativo = None
-
-    def _executar_capturas(self):
-        """Roda em background: itera os IDs e chama o Selenium para cada um."""
-        total = len(self.ids_carregados)
-        pasta = self.pasta_destino.get()
-        erros = []
-
-        for i, lattes_id in enumerate(self.ids_carregados, start=1):
-            # Verifica cancelamento antes de cada ID
-            if self._cancelar_solicitado:
-                self.janela.after(0, self._finalizar_cancelamento, i - 1, total)
+                tipo, dado = self.fila.get_nowait()
+            except queue.Empty:
                 return
+            if tipo == "log":
+                self._log(dado)
+            elif tipo == "registro":
+                self._receber_registro(dado)
+            elif tipo == "fim" and incluir_fim:
+                self._ao_terminar(*dado)
 
-            self.janela.after(0, self._atualizar_log,
-                f"🌐  [{i}/{total}]  Abrindo navegador para ID: {lattes_id}")
-            resultado = self._screenshot_e_dados_com_captcha_manual(lattes_id, pasta)
+    def _receber_registro(self, r):
+        self.registros.append(r)
+        self._atualizar_progresso()
+        posicao = f"[{len(self.registros)}/{len(self.ids)}]"
+        if r.status == coletor.STATUS_OK:
+            self._log(f"✅  {posicao}  {encurtar(r.nome)} — atualizado em "
+                      f"{r.ultima_atualizacao:%d/%m/%Y}")
+        elif r.status == coletor.STATUS_SEM_DATA:
+            self._log(f"⚠️  {posicao}  {encurtar(r.nome)} — data de atualização não encontrada")
+        elif r.status == coletor.STATUS_CAPTCHA:
+            self._log(f"⏰  {posicao}  {r.id_lattes} — CAPTCHA não resolvido a tempo")
+        else:
+            self._log(f"❌  {posicao}  {r.id_lattes} — {r.observacao}")
 
-            # Verifica cancelamento logo após fechar o driver
-            if self._cancelar_solicitado:
-                self.janela.after(0, self._finalizar_cancelamento, i, total)
-                return
+    def _ao_terminar(self, motivo, detalhe):
+        """Chamado na thread principal quando a captura termina, é cancelada ou falha."""
+        self.captura_ativa = False
+        self.coletor = None
+        self.cancelado.clear()
+        planilha = self._salvar_automatico()
+        self.pode_continuar = motivo != "concluido" and bool(self._pendentes())
+        self._atualizar_botoes()
 
-            if resultado:
-                self.dados_coletados.append(resultado)
-            else:
-                erros.append(lattes_id)
-                # Adiciona um registro de erro mesmo assim
-                self.dados_coletados.append({
-                    'link_lattes': f'https://lattes.cnpq.br/{lattes_id}',
-                    'id_lattes': lattes_id,
-                    'nome': 'ERRO NA CAPTURA',
-                    'ultima_atualizacao': 'ERRO NA CAPTURA',
-                    'arquivo_screenshot': f'{lattes_id}.png (erro)'
-                })
+        local = f"\n\nPlanilha e prints salvos em:\n{self.pasta_execucao}" if planilha else ""
+        dica_continuar = ("\n\nClique em \"Continuar\" para retomar de onde parou."
+                          if self.pode_continuar else "")
+        processados = f"{len(self.registros)} de {len(self.ids)} ID(s) processados"
 
-            self.janela.after(0, self._atualizar_progresso, i, total)
+        if motivo == "cancelado":
+            self._log(f"🛑  Captura cancelada: {processados}.")
+            messagebox.showinfo("Captura cancelada",
+                                f"A captura foi cancelada.\n{processados}.{local}{dica_continuar}")
+        elif motivo == "erro":
+            self._log(f"❌  Captura interrompida: {detalhe}")
+            messagebox.showerror("Captura interrompida",
+                                 f"{detalhe}\n\n{processados}.{local}{dica_continuar}")
+        else:
+            self._mostrar_resumo(local)
 
-        self.janela.after(0, self._finalizar_captura, erros, total) # Finaliza normalmente na thread principal
+    def _mostrar_resumo(self, local):
+        total = len(self.registros)
+        ok = Counter(r.status for r in self.registros)[coletor.STATUS_OK]
+        problemas = [r for r in self.registros if r.status != coletor.STATUS_OK]
+        desatualizados = sum(1 for r in self.registros
+                             if (r.dias_desde_atualizacao or 0) > coletor.LIMITE_DIAS_DESATUALIZADO)
 
-    def _screenshot_e_dados_com_captcha_manual(self, lattes_id, pasta_destino):
-        """
-        Abre o navegador visível, aguarda o usuário resolver o CAPTCHA
-        manualmente, extrai os dados da página e salva o screenshot.
-        Retorna um dicionário com os dados ou None em caso de erro.
-        """
-        options = Options()
-        options.add_argument("--window-size=1080,720")
+        linhas = [f"{ok} de {total} currículo(s) capturado(s) com sucesso."]
+        if desatualizados:
+            linhas.append(f"{desatualizados} sem atualização há mais de "
+                          f"{coletor.LIMITE_DIAS_DESATUALIZADO} dias (destacados na planilha).")
 
-        url = f'https://lattes.cnpq.br/{lattes_id}'
-        caminho_arquivo = os.path.join(pasta_destino, f'{lattes_id}.png')
-        driver = webdriver.Chrome(options=options)
-        self._driver_ativo = driver  # Registra para poder fechar ao cancelar
+        if problemas:
+            lista = "\n".join(f"  • {r.id_lattes}: {r.status}" for r in problemas[:15])
+            if len(problemas) > 15:
+                lista += f"\n  … e mais {len(problemas) - 15}"
+            linhas.append(f"Com problema:\n{lista}")
+            self._log(f"⚠️  Captura concluída: {ok} de {total} OK, {len(problemas)} com problema.")
+            messagebox.showwarning("Captura concluída com problemas", "\n\n".join(linhas) + local)
+        else:
+            self._log(f"✅  Captura concluída: todos os {total} currículos capturados.")
+            messagebox.showinfo("Captura concluída", "\n\n".join(linhas) + local)
 
-        try:
-            driver.get(url)
-            self.janela.after(0, self._atualizar_log,
-                f"⏳  [{lattes_id}]  Aguardando resolução do CAPTCHA (20s)...")
+    # ------------------------------------------------------------------
+    # Planilha
+    # ------------------------------------------------------------------
 
-            # Espera interruptível: verifica o flag a cada 0,5s durante 20s
-            for _ in range(40):
-                if self._cancelar_solicitado:
-                    return None
-                time.sleep(0.5)
-
-            # Confirma que a página carregou após o CAPTCHA
-            try:
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
-            except Exception:
-                self.janela.after(0, self._atualizar_log,
-                    f"⚠️  [{lattes_id}]  Não foi possível confirmar o carregamento da página.")
-
-            if self._cancelar_solicitado:
-                return None
-
-            time.sleep(2)  # Aguarda carregamento completo
-
-            # Extrair os dados da página
-            dados = self._extrair_dados_pagina(driver, lattes_id)
-            
-            # Salvar screenshot e adicionar timestamp
-            driver.save_screenshot(caminho_arquivo)
-            self._adicionar_timestamp_screenshot(caminho_arquivo)
-            self.janela.after(0, self._atualizar_log,
-                f"📸  [{lattes_id}]  Screenshot salvo em: {caminho_arquivo}")
-            self.janela.after(0, self._atualizar_log,
-                f"📊  [{lattes_id}]  Nome: {dados['nome'][:50]}... | Atualização: {dados['ultima_atualizacao']}")
-
-            return dados
-
-        except Exception as e:
-            if not self._cancelar_solicitado:
-                self.janela.after(0, self._atualizar_log,
-                    f"❌  [{lattes_id}]  Erro: {e}")
+    def _salvar_automatico(self):
+        """Salva a planilha na subpasta da captura. Retorna o caminho, ou None se não salvou."""
+        if not self.registros or not self.pasta_execucao:
             return None
-
-        finally:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-            self._driver_ativo = None
-
-    def _adicionar_timestamp_screenshot(self, caminho_arquivo):
-        """
-        Adiciona data e hora no canto inferior direito do screenshot salvo.
-        Sobrescreve o arquivo original com a versão anotada.
-        """
+        caminho = os.path.join(self.pasta_execucao, coletor.NOME_PLANILHA)
         try:
-            img = Image.open(caminho_arquivo).convert("RGBA")
-            overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
-            draw = ImageDraw.Draw(overlay)
-
-            texto = datetime.now().strftime("Capturado em: %d/%m/%Y às %H:%M:%S")
-
-            try:
-                fonte = ImageFont.truetype("arialbd.ttf", 25)
-            except IOError:
-                try:
-                    fonte = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 25)
-                except IOError:
-                    fonte = ImageFont.load_default()
-
-            bbox = draw.textbbox((0, 0), texto, font=fonte)
-            largura_texto = bbox[2] - bbox[0]
-            altura_texto = bbox[3] - bbox[1]
-
-            margem = 20
-            padding = 10
-
-            x1 = img.width - largura_texto - (margem * 2) - padding
-            y1 = img.height - altura_texto - (margem * 2) - padding
-            x2 = img.width - margem + padding
-            y2 = img.height - margem + padding
-
-            draw.rectangle([x1, y1, x2, y2], fill=(0, 0, 0, 180))
-            draw.text((x1 + padding, y1 + padding), texto, fill=(255, 255, 255, 255), font=fonte)
-
-            resultado = Image.alpha_composite(img, overlay).convert("RGB")
-            resultado.save(caminho_arquivo)
-
-        except Exception as e:
-            self.janela.after(0, self._atualizar_log,
-                f"⚠️  Não foi possível adicionar timestamp no screenshot: {e}")
+            coletor.salvar_planilha(self.registros, caminho)
+        except Exception as erro:
+            self._log(f"⚠️  Não foi possível salvar a planilha automaticamente "
+                      f"({coletor.resumir_erro(erro)}). Use \"Exportar Excel\".")
+            return None
+        self._log(f"💾  Planilha salva: {caminho}")
+        return caminho
 
     def exportar_para_excel(self):
-        """Exporta os dados coletados para um arquivo Excel."""
-        if not self.dados_coletados:
+        """Salva uma cópia da planilha em outro lugar."""
+        if not self.registros:
             messagebox.showwarning("Sem dados", "Nenhum dado foi coletado ainda. Execute a captura primeiro.")
             return
 
-        # Perguntar onde salvar o arquivo Excel
-        arquivo_excel = filedialog.asksaveasfilename(
-            title='Salvar arquivo Excel',
-            defaultextension='.xlsx',
+        caminho = filedialog.asksaveasfilename(
+            title="Salvar arquivo Excel",
+            defaultextension=".xlsx",
             filetypes=[("Arquivo Excel", "*.xlsx"), ("Todos os arquivos", "*.*")],
-            initialfile='dados_lattes.xlsx'
+            initialdir=self.pasta_execucao or self.pasta_destino,
+            initialfile=coletor.NOME_PLANILHA,
         )
-
-        if not arquivo_excel:
+        if not caminho:
             return
 
         try:
-            # Criar planilha
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = "Currículos Lattes"
+            coletor.salvar_planilha(self.registros, caminho)
+        except Exception as erro:
+            messagebox.showerror("Erro ao exportar", f"Erro ao salvar arquivo Excel:\n{erro}")
+            self._log(f"❌  Erro ao exportar Excel: {erro}")
+            return
 
-            # Estilos
-            header_font = Font(bold=True, color="FFFFFF")
-            header_fill = PatternFill(start_color="4CAF50", end_color="4CAF50", fill_type="solid")
-            center_alignment = Alignment(horizontal="center", vertical="center")
+        self._log(f"✅  Dados exportados para: {caminho}")
+        messagebox.showinfo("Exportação concluída",
+                            f"Dados exportados com sucesso para:\n{caminho}\n\n"
+                            f"Total de registros: {len(self.registros)}")
 
-            # Cabeçalhos
-            cabecalhos = ["Link Lattes", "ID Lattes", "Nome do Pesquisador", "Última Atualização"]
-            for col, cabecalho in enumerate(cabecalhos, 1):
-                cell = ws.cell(row=1, column=col, value=cabecalho)
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = center_alignment
+    # ------------------------------------------------------------------
+    # Fechar a janela
+    # ------------------------------------------------------------------
 
-            # Dados
-            for row, dados in enumerate(self.dados_coletados, 2):
-                ws.cell(row=row, column=1, value=dados['link_lattes'])
-                ws.cell(row=row, column=2, value=dados['id_lattes'])
-                ws.cell(row=row, column=3, value=dados['nome'])
-                ws.cell(row=row, column=4, value=dados['ultima_atualizacao'])
-                    
-                # Ajustar alinhamento das células de dados
-                for col in range(1, 5):
-                    ws.cell(row=row, column=col).alignment = center_alignment
+    def _ao_fechar(self):
+        if self.captura_ativa:
+            if not messagebox.askyesno(
+                    "Captura em andamento",
+                    "Há uma captura em andamento.\n\nDeseja cancelar e sair? "
+                    "Os dados já capturados serão salvos na planilha.",
+                    icon="warning"):
+                return
+            self.cancelado.set()
+            if self.coletor:
+                self.coletor.fechar()
+            if self.thread:
+                self.thread.join(timeout=5)
+            self._processar_fila(incluir_fim=False)
+            self._salvar_automatico()
 
-            # Ajustar largura das colunas
-            ws.column_dimensions['A'].width = 45  # Link Lattes
-            ws.column_dimensions['B'].width = 20  # ID Lattes
-            ws.column_dimensions['C'].width = 40  # Nome
-            ws.column_dimensions['D'].width = 20  # Data
+        self.janela.after_cancel(self._id_fila)
+        self.janela.destroy()
 
-            # Salvar arquivo
-            wb.save(arquivo_excel)
-            
-            messagebox.showinfo(
-                "Exportação concluída",
-                f"Dados exportados com sucesso para:\n{arquivo_excel}\n\nTotal de registros: {len(self.dados_coletados)}"
-            )
-            
-            self._atualizar_log(f"✅  Dados exportados para Excel: {os.path.basename(arquivo_excel)}")
 
-        except Exception as e:
-            messagebox.showerror("Erro ao exportar", f"Erro ao salvar arquivo Excel:\n{e}")
-            self._atualizar_log(f"❌  Erro ao exportar Excel: {e}")
-
-    def _finalizar_captura(self, erros, total):
-        """Chamado na thread principal ao terminar todos os IDs com sucesso."""
-        self._captura_ativa = False
-        self.btn_iniciar.configure(state="normal", cursor="hand2", text="Iniciar Captura")
-        self.btn_cancelar.configure(state="disabled", cursor="arrow", text="Cancelar")
-        
-        # Habilitar botão de exportar se houver dados
-        if self.dados_coletados:
-            self.btn_exportar.configure(state="normal", cursor="hand2")
-
-        if erros:
-            self._atualizar_log(f"⚠️  Concluído com erros em {len(erros)} ID(s): {', '.join(erros)}")
-            messagebox.showwarning(
-                "Captura concluída com erros",
-                f"{total - len(erros)} de {total} capturas concluídas com sucesso.\n\n"
-                f"IDs com erro:\n" + "\n".join(erros)
-            )
-        else:
-            self._atualizar_log(f"✅  Todos os {total} screenshots foram salvos com sucesso!")
-            messagebox.showinfo(
-                "Captura concluída",
-                f"Todos os {total} screenshots foram salvos com sucesso em:\n{self.pasta_destino.get()}\n\n"
-                f"Clique em 'Exportar Excel' para gerar a planilha com os dados coletados."
-            )
-
-    def _finalizar_cancelamento(self, concluidos, total):
-        """Chamado na thread principal quando o usuário cancela."""
-        self._captura_ativa = False
-        self._cancelar_solicitado = False
-        self.btn_cancelar.configure(state="disabled", cursor="arrow", text="Cancelar")
-        self.btn_iniciar.configure(state="disabled", cursor="arrow", text="Iniciar Captura")
-        
-        # Habilitar botão de exportar se houver dados coletados até o cancelamento
-        if self.dados_coletados:
-            self.btn_exportar.configure(state="normal", cursor="hand2")
-
-        self._atualizar_log(
-            f"🛑  Captura cancelada — {concluidos} de {total} ID(s) processados."
-        )
-        messagebox.showinfo(
-            "Captura cancelada",
-            f"A captura foi cancelada pelo usuário.\n"
-            f"{concluidos} de {total} ID(s) foram processados.\n\n"
-            f"Os dados coletados até agora podem ser exportados clicando em 'Exportar Excel'.\n\n"
-            f"Selecione um novo arquivo para continuar."
-        )
-        self._resetar_ids() # Reseta os IDs para forçar nova seleção de arquivo
+def main():
+    app = LattesInk()
+    app.janela.mainloop()
 
 
 if __name__ == "__main__":
-    app = lattesink()
-    app.janela.mainloop()
+    main()
