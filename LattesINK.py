@@ -5,6 +5,8 @@ A coleta em si (navegador, extração, planilha) fica em coletor.py,
 que precisa estar na mesma pasta deste arquivo.
 """
 
+__version__ = "1.0.0"
+
 import json
 import os
 import queue
@@ -403,7 +405,7 @@ class LattesInk:
         barra.pack(side="right", fill="y")
         lista = tk.Listbox(frame_lista, yscrollcommand=barra.set, font=(FONTE, 10),
                            selectmode="single", activestyle="dotbox", height=7)
-        for coluna, qtd in zip(colunas, validos):
+        for coluna, qtd in zip(colunas, validos, strict=True):
             lista.insert(tk.END, f"{coluna.nome}   ({qtd} ID(s) válido(s))")
         lista.pack(side="left", fill="both", expand=True)
         barra.config(command=lista.yview)
