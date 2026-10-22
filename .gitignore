@@ -1,1 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Ferramentas de desenvolvimento
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Gerados pelo PyInstaller e pelos pacotes
+build/
+dist/
 *.exe
+*.deb
+
+# Saídas do programa, caso a pasta do projeto seja escolhida como destino
+captura_*/

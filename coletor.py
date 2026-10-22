@@ -328,7 +328,7 @@ class ColetorLattes:
         """Devolve o navegador aberto, abrindo um novo se o usuário tiver fechado o anterior."""
         if self.driver is not None:
             try:
-                self.driver.current_window_handle  # falha se a aba ou o navegador foi fechado
+                _ = self.driver.current_window_handle  # falha se a aba ou o navegador foi fechado
                 return self.driver
             except NoSuchWindowException:
                 # A aba usada foi fechada, mas o navegador continua aberto em outra

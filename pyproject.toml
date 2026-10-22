@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lattesink"
+dynamic = ["version"]
+description = "Verificador de currículos Lattes: captura o nome, a data da última atualização e um print de cada currículo."
+readme = "README.md"
+requires-python = ">=3.10"
+license-files = ["LICENSE"]
+authors = [{ name = "Matheus Fernandes" }]
+keywords = ["lattes", "cnpq", "currículo", "pesquisa"]
+classifiers = [
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: Portuguese (Brazilian)",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "openpyxl>=3.1,<4",
+    "pillow>=10",
+    "selenium>=4.11,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff==0.17.1",
+]
+build = [
+    "pyinstaller>=6.10",
+]
+
+[project.gui-scripts]
+lattesink = "LattesINK:main"
+
+[project.urls]
+"Código-fonte" = "https://github.com/MatheusEstatistico/LattesINK"
+Issues = "https://github.com/MatheusEstatistico/LattesINK/issues"
+Releases = "https://github.com/MatheusEstatistico/LattesINK/releases"
+
+[tool.setuptools]
+py-modules = ["LattesINK", "coletor"]
+
+[tool.setuptools.dynamic]
+version = { attr = "LattesINK.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+addopts = ["-ra", "--strict-markers"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "W",    # pycodestyle (avisos)
+    "F",    # pyflakes
+    "I",    # ordem dos imports
+    "B",    # bugbear
+    "UP",   # sintaxe moderna
+    "SIM",  # simplificações
+    "C4",   # comprehensions
+    "PIE",
+    "RUF",
+]
+ignore = [
+    "SIM105",  # try/except/pass é mais claro que contextlib.suppress nos pontos em que o erro é esperado
+]
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
