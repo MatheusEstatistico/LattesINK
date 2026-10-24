@@ -51,8 +51,10 @@ def test_lote_sem_chrome(tmp_path):
     c._criar_driver = sem_chrome
     mensagens = Mensagens()
     coletor.executar_lote(c, [ID_A], str(tmp_path), mensagens)
-    detalhe = "Não foi possível abrir o Chrome:\nunable to obtain driver for chrome"
-    assert mensagens[-1] == ("fim", ("erro", detalhe))
+    motivo, detalhe = mensagens[-1][1]
+    assert motivo == "erro"
+    assert detalhe.startswith("Não foi possível abrir o Chrome:\nunable to obtain driver for chrome")
+    assert "Google Chrome está instalado" in detalhe
 
 
 def test_csv_aberto_no_excel_nao_interrompe_o_lote(novo_coletor, tmp_path):
@@ -64,7 +66,7 @@ def test_csv_aberto_no_excel_nao_interrompe_o_lote(novo_coletor, tmp_path):
     assert mensagens[-1] == ("fim", ("concluido", ""))
 
 
-def test_erro_inesperado_encerra_com_mensagem(tmp_path):
+def test_erro_inesperado_encerra_com_mensagem_e_vai_para_o_log(tmp_path, caplog):
     class Quebrado:
         cancelado = threading.Event()
         fechado = False
@@ -80,6 +82,9 @@ def test_erro_inesperado_encerra_com_mensagem(tmp_path):
     coletor.executar_lote(c, [ID_A, ID_C], str(tmp_path), mensagens)
     assert mensagens[-1] == ("fim", ("erro", "Erro inesperado: falha inesperada"))
     assert c.fechado
+    (registro,) = caplog.records
+    assert registro.levelname == "ERROR"
+    assert registro.exc_info[0] is RuntimeError  # o traceback completo vai para o log
 
 
 # --- pausa depois de várias falhas seguidas --------------------------------------

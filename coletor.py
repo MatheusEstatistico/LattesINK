@@ -15,6 +15,7 @@ from __future__ import annotations
 import codecs
 import csv
 import io
+import logging
 import os
 import re
 import time
@@ -92,6 +93,11 @@ PAGINA_CARREGANDO = "carregando"
 PAGINA_CURRICULO = "curriculo"
 PAGINA_CAPTCHA = "captcha"
 PAGINA_OUTRA = "outra"
+
+
+# Avisos e erros com o traceback completo. A janela grava isso em lattesink.log;
+# sem configuração nenhuma, só os erros aparecem (no terminal).
+logger = logging.getLogger("lattesink.coletor")
 
 
 class CapturaCancelada(Exception):
@@ -542,6 +548,7 @@ class ColetorLattes:
             except Exception as erro:
                 observacao = f"Print sem data/hora: {resumir_erro(erro)}"
                 self.log(f"⚠️  [{lattes_id}]  {observacao}")
+                logger.warning("Não foi possível carimbar o print de %s", lattes_id, exc_info=True)
 
             return Registro(
                 id_lattes=lattes_id,
@@ -559,6 +566,7 @@ class ColetorLattes:
             if self.cancelado.is_set():
                 # O erro foi causado pelo próprio cancelamento (navegador fechado no meio)
                 raise CapturaCancelada() from erro
+            logger.warning("Erro ao capturar o currículo %s", lattes_id, exc_info=True)
             return Registro(lattes_id, STATUS_ERRO, observacao=resumir_erro(erro))
 
 
@@ -755,8 +763,11 @@ def executar_lote(coletor_, pendentes, pasta, enviar, inicio=1, total=None):
     except CapturaCancelada:
         motivo = "cancelado"
     except ErroNavegador as erro:
-        motivo, detalhe = "erro", f"Não foi possível abrir o Chrome:\n{erro}"
+        logger.error("Não foi possível abrir o Chrome", exc_info=True)
+        motivo, detalhe = "erro", (f"Não foi possível abrir o Chrome:\n{erro}\n\n"
+                                   "Verifique se o Google Chrome está instalado e atualizado.")
     except Exception as erro:
+        logger.exception("Erro inesperado durante a captura")
         motivo, detalhe = "erro", f"Erro inesperado: {resumir_erro(erro)}"
     finally:
         coletor_.fechar()

@@ -1,4 +1,8 @@
-"""Dados de exemplo e um navegador falso, usados pelos testes."""
+"""Dados de exemplo, um navegador falso e um coletor falso, usados pelos testes."""
+
+import os
+from datetime import date
+from typing import ClassVar
 
 from PIL import Image
 
@@ -74,4 +78,40 @@ class DriverFalso:
         return True
 
     def quit(self):
+        self.fechado = True
+
+
+class ColetorFalso:
+    """
+    Substitui coletor.ColetorLattes nos testes da janela, sem navegador.
+
+    `roteiro` diz o status de cada ID ({id: status} ou {id: [status da 1ª
+    tentativa, da 2ª, ...]}); IDs fora do roteiro dão OK. Com `bloquear`,
+    cada captura espera o cancelamento (para testar o botão Cancelar).
+    """
+
+    roteiro: ClassVar[dict] = {}
+    bloquear: ClassVar[bool] = False
+
+    def __init__(self, cancelado, log=print, **_):
+        self.cancelado = cancelado
+        self.log = log
+        self.fechado = False
+
+    def capturar(self, lattes_id, pasta):
+        if self.bloquear:
+            self.cancelado.wait(10)
+            raise coletor.CapturaCancelada()
+        status = self.roteiro.get(lattes_id, coletor.STATUS_OK)
+        if isinstance(status, list):
+            status = status.pop(0) if len(status) > 1 else status[0]
+        if status not in (coletor.STATUS_OK, coletor.STATUS_SEM_DATA):
+            return coletor.Registro(lattes_id, status, observacao="falha simulada")
+        caminho = os.path.join(pasta, f"{lattes_id}.png")
+        Image.new("RGB", (64, 64), "white").save(caminho)
+        data = date(2024, 3, 15) if status == coletor.STATUS_OK else None
+        return coletor.Registro(lattes_id, status, nome=f"Pesquisador {lattes_id[-4:]}",
+                                ultima_atualizacao=data, arquivo_print=caminho)
+
+    def fechar(self):
         self.fechado = True
