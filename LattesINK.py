@@ -1,5 +1,5 @@
 """
-Lattes Ink: verificador de currículos Lattes (interface gráfica).
+LattesINK: verificador de currículos Lattes (interface gráfica).
 
 A coleta em si (navegador, extração, planilha) fica em coletor.py,
 que precisa estar na mesma pasta deste arquivo.
@@ -8,8 +8,12 @@ que precisa estar na mesma pasta deste arquivo.
 __version__ = "1.0.0"
 
 import json
+import logging
+import logging.handlers
 import os
+import platform
 import queue
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -28,14 +32,37 @@ COR_PRIMARIA = "#00aca0"
 COR_INICIAR = "#4CAF50"
 COR_CANCELAR = "#d65548"
 COR_EXPORTAR = "#6ab8f7"
+COR_REPETIR = "#c27c0e"
+COR_DESATIVADO = "#d5dce0"        # fundo dos botões desativados
+COR_TEXTO_DESATIVADO = "#6b7a83"
 COR_TEXTO = "#333333"
 COR_APAGADO = "gray"
 COR_SUCESSO = "#2e7d32"
 COR_AVISO = "#c0392b"
 FONTE = "Arial"
 
-ARQUIVO_CONFIG = os.path.join(os.path.expanduser("~"), ".lattesink.json")
 INTERVALO_FILA_MS = 100  # de quanto em quanto tempo a janela lê as mensagens da captura
+
+
+def pasta_de_configuracao():
+    """Pasta padrão do sistema para as configurações do programa."""
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        return os.path.join(os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming"),
+                            "LattesINK")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support", "LattesINK")
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "lattesink")
+
+
+PASTA_CONFIG = pasta_de_configuracao()
+ARQUIVO_CONFIG = os.path.join(PASTA_CONFIG, "config.json")
+# Até a versão 1.0.0 a configuração ficava solta na pasta do usuário
+ARQUIVO_CONFIG_ANTIGO = os.path.join(os.path.expanduser("~"), ".lattesink.json")
+# Avisos e erros inesperados, com o traceback completo (para investigar problemas)
+ARQUIVO_LOG_ERROS = os.path.join(PASTA_CONFIG, "lattesink.log")
+
+logger = logging.getLogger("lattesink")
 
 
 def caminho_recurso(nome):
@@ -45,20 +72,54 @@ def caminho_recurso(nome):
 
 
 def carregar_config():
-    try:
-        with open(ARQUIVO_CONFIG, encoding="utf-8") as f:
-            dados = json.load(f)
-        return dados if isinstance(dados, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    """Lê a configuração; se só existir a do formato antigo, ela é movida para a pasta nova."""
+    for caminho in (ARQUIVO_CONFIG, ARQUIVO_CONFIG_ANTIGO):
+        try:
+            with open(caminho, encoding="utf-8") as f:
+                dados = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(dados, dict):
+            continue
+        if caminho == ARQUIVO_CONFIG_ANTIGO and salvar_config(dados):
+            try:
+                os.remove(ARQUIVO_CONFIG_ANTIGO)
+            except OSError:
+                pass
+        return dados
+    return {}
 
 
 def salvar_config(config):
+    """Grava a configuração. Retorna False se não conseguiu (o que não interrompe nada)."""
     try:
+        os.makedirs(os.path.dirname(ARQUIVO_CONFIG), exist_ok=True)
         with open(ARQUIVO_CONFIG, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
     except OSError:
-        pass  # não lembrar a pasta não é motivo para interromper nada
+        return False
+    return True
+
+
+def configurar_log_de_erros():
+    """
+    Grava os avisos e erros do programa em ARQUIVO_LOG_ERROS (até ~1 MB, mais um
+    arquivo anterior). O arquivo só é criado quando aparece o primeiro aviso.
+    """
+    try:
+        os.makedirs(os.path.dirname(ARQUIVO_LOG_ERROS), exist_ok=True)
+        arquivo = logging.handlers.RotatingFileHandler(
+            ARQUIVO_LOG_ERROS, maxBytes=1_000_000, backupCount=1, encoding="utf-8", delay=True)
+    except OSError:
+        return None
+    arquivo.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    logger.addHandler(arquivo)
+    logger.setLevel(logging.INFO)
+    return arquivo
+
+
+def descricao_do_ambiente():
+    return f"LattesINK {__version__}, Python {platform.python_version()}, {platform.platform()}"
 
 
 def identificar_app_no_windows():
@@ -75,6 +136,34 @@ def identificar_app_no_windows():
             pass
 
 
+def ativar_nitidez_no_windows():
+    """
+    Sem isto, em telas com escala de 125%, 150%... o Windows estica a janela
+    como uma imagem e o texto fica borrado. É o mesmo que o IDLE, o editor
+    que vem com o Python, faz. Precisa ser chamado antes de criar a janela.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # Windows 8.1 em diante
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()  # Windows 7
+        except Exception:
+            pass
+
+
+def abrir_no_sistema(caminho):
+    """Abre uma pasta no gerenciador de arquivos do sistema (Explorer, Finder...)."""
+    if sys.platform == "win32":
+        os.startfile(caminho)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", caminho])
+    else:
+        subprocess.Popen(["xdg-open", caminho])
+
+
 def encurtar(texto, limite=50):
     """Corta textos longos, só colocando reticências quando realmente cortou."""
     return texto if len(texto) <= limite else texto[:limite - 1].rstrip() + "…"
@@ -83,13 +172,16 @@ def encurtar(texto, limite=50):
 class LattesInk:
     def __init__(self):
         identificar_app_no_windows()
+        ativar_nitidez_no_windows()
         self.janela = tk.Tk()
-        self.janela.title("Lattes ink")
+        # Escala da tela: 1,0 em 100%, 1,5 em 150%... As fontes (em pontos) já
+        # crescem sozinhas; as medidas em pixels passam por _px().
+        self.escala = max(1.0, self.janela.winfo_fpixels("1i") / 96)
+        self.janela.title(f"LattesINK {__version__}")
         self._definir_icone()
-        self.janela.geometry("800x660")
-        self.janela.resizable(width=False, height=False)
         self.janela.configure(bg=COR_FUNDO)
         self.janela.protocol("WM_DELETE_WINDOW", self._ao_fechar)
+        self.janela.report_callback_exception = self._erro_inesperado
 
         # Estado interno
         self.config = carregar_config()
@@ -106,6 +198,7 @@ class LattesInk:
         self.fila = queue.Queue()        # mensagens da thread de captura para a janela
 
         self._montar_interface()
+        self._dimensionar_janela()
 
         pasta_salva = self.config.get("pasta_destino")
         if pasta_salva and os.path.isdir(pasta_salva):
@@ -129,18 +222,23 @@ class LattesInk:
             pass  # sem o arquivo (ou fora do Windows) o programa abre sem ícone
 
     def _criar_botao(self, pai, texto, comando, cor, tamanho=10, **opcoes):
-        return tk.Button(
+        botao = tk.Button(
             pai, text=texto, command=comando,
             bg=cor, fg="white", activebackground=cor, activeforeground="white",
+            disabledforeground=COR_TEXTO_DESATIVADO,
             font=(FONTE, tamanho, "bold"), relief="flat", cursor="hand2",
             padx=opcoes.pop("padx", 10), pady=opcoes.pop("pady", 8),
             **opcoes,
         )
+        botao.cor_base = cor  # para _ativar voltar à cor original
+        return botao
 
     @staticmethod
     def _ativar(botao, ativo):
-        botao.configure(state="normal" if ativo else "disabled",
-                        cursor="hand2" if ativo else "arrow")
+        """Ativa ou desativa o botão. Desativado, ele fica cinza, para não parecer clicável."""
+        cor = botao.cor_base if ativo else COR_DESATIVADO
+        botao.configure(state="normal" if ativo else "disabled", cursor="hand2" if ativo else "arrow",
+                        bg=cor, activebackground=cor)
 
     def _titulo_secao(self, pai, texto):
         tk.Label(pai, text=texto, font=(FONTE, 10, "bold"), bg=COR_FUNDO,
@@ -155,7 +253,7 @@ class LattesInk:
         botao = self._criar_botao(caixa, texto_botao, comando, COR_PRIMARIA,
                                   tamanho=9, width=9, padx=8, pady=4)
         botao.pack(side="right", padx=10, pady=8)
-        label = tk.Label(caixa, text=texto_inicial, wraplength=560, justify="left",
+        label = tk.Label(caixa, text=texto_inicial, wraplength=self._px(560), justify="left",
                          anchor="w", bg=COR_CAIXA, fg=COR_APAGADO, font=(FONTE, 9, "bold"))
         label.pack(side="left", padx=5, pady=8, fill="x", expand=True)
         return label, botao
@@ -175,7 +273,7 @@ class LattesInk:
         # 2. Arquivo de IDs
         self._titulo_secao(principal, "2. Envie o arquivo com os Lattes IDs (.txt, .xlsx ou .csv)")
         self.label_ids, self.btn_ids = self._caixa_arquivo(
-            principal, "📄", "Nenhum arquivo selecionado", "Lattes ID's", self.escolher_ids)
+            principal, "📄", "Nenhum arquivo selecionado", "Lattes IDs", self.escolher_ids)
 
         # 3. Progresso
         self._titulo_secao(principal, "3. Progresso da captura")
@@ -202,15 +300,39 @@ class LattesInk:
         self.btn_iniciar = self._criar_botao(frame_botoes, "Iniciar Captura",
                                              self.iniciar_captura, COR_INICIAR)
         self.btn_iniciar.pack(side="left", padx=(0, 8))
+        self.btn_repetir = self._criar_botao(frame_botoes, "Repetir falhas",
+                                             self.repetir_falhas, COR_REPETIR)
+        self.btn_repetir.pack(side="left", padx=(0, 8))
         self.btn_cancelar = self._criar_botao(frame_botoes, "Cancelar",
                                               self.cancelar_captura, COR_CANCELAR)
         self.btn_cancelar.pack(side="left", padx=(0, 8))
         self.btn_exportar = self._criar_botao(frame_botoes, "Exportar Excel",
                                               self.exportar_para_excel, COR_EXPORTAR)
-        self.btn_exportar.pack(side="left")
+        self.btn_exportar.pack(side="left", padx=(0, 8))
+        self.btn_abrir = self._criar_botao(frame_botoes, "Abrir pasta", self.abrir_pasta, COR_PRIMARIA)
+        self.btn_abrir.pack(side="left")
+
+    def _px(self, pixels):
+        """Converte uma medida pensada para a escala de 100% para a escala atual da tela."""
+        return round(pixels * self.escala)
+
+    def _dimensionar_janela(self):
+        """
+        Abre com 800x660 (na escala de 100%), mas nunca menor que o conteúdo
+        nem maior que a tela. A janela pode ser redimensionada; o log acompanha.
+        """
+        self.janela.update_idletasks()
+        minimo_largura, minimo_altura = self.janela.winfo_reqwidth(), self.janela.winfo_reqheight()
+        largura = max(minimo_largura, min(self._px(800), int(self.janela.winfo_screenwidth() * 0.9)))
+        altura = max(minimo_altura, min(self._px(660), int(self.janela.winfo_screenheight() * 0.85)))
+        self.janela.minsize(minimo_largura, minimo_altura)
+        self.janela.geometry(f"{largura}x{altura}")
 
     def _centralizar(self, janela, largura, altura):
-        self.janela.update_idletasks()
+        """Centraliza `janela` sobre a principal, com pelo menos o tamanho que o conteúdo pede."""
+        janela.update_idletasks()
+        largura = max(largura, janela.winfo_reqwidth())
+        altura = max(altura, janela.winfo_reqheight())
         x = self.janela.winfo_rootx() + (self.janela.winfo_width() - largura) // 2
         y = self.janela.winfo_rooty() + (self.janela.winfo_height() - altura) // 2
         janela.geometry(f"{largura}x{altura}+{max(x, 0)}+{max(y, 0)}")
@@ -218,6 +340,15 @@ class LattesInk:
     # ------------------------------------------------------------------
     # Estado da interface
     # ------------------------------------------------------------------
+
+    def _falhas(self):
+        """Registros dos currículos que não deram OK (podem ser capturados de novo)."""
+        return [r for r in self.registros if r.status != coletor.STATUS_OK]
+
+    def _registros_em_ordem(self):
+        """Registros na ordem do arquivo de IDs (repetir falhas deixa a lista fora de ordem)."""
+        posicao = {lattes_id: i for i, lattes_id in enumerate(self.ids)}
+        return sorted(self.registros, key=lambda r: posicao.get(r.id_lattes, len(posicao)))
 
     def _pendentes(self):
         feitos = {r.id_lattes for r in self.registros}
@@ -232,8 +363,14 @@ class LattesInk:
         self._ativar(self.btn_pasta, not capturando)
         self._ativar(self.btn_ids, not capturando)
         self._ativar(self.btn_exportar, not capturando and bool(self.registros))
+        self._ativar(self.btn_abrir, self._pasta_para_abrir() is not None)
         self._ativar(self.btn_cancelar, capturando and not cancelando)
         self.btn_cancelar.configure(text="Cancelando..." if cancelando else "Cancelar")
+
+        falhas = [] if capturando else self._falhas()
+        self._ativar(self.btn_repetir, bool(falhas) and bool(self.pasta_execucao)
+                     and os.path.isdir(self.pasta_execucao))
+        self.btn_repetir.configure(text=f"Repetir falhas ({len(falhas)})" if falhas else "Repetir falhas")
 
         if capturando:
             self.btn_iniciar.configure(text="⏳  Capturando...")
@@ -246,6 +383,13 @@ class LattesInk:
         else:
             self.btn_iniciar.configure(text="Iniciar Captura")
         self._ativar(self.btn_iniciar, bool(self.pasta_destino and self.ids))
+
+    def _pasta_para_abrir(self):
+        """A subpasta da captura atual; se ainda não houver, a pasta de destino."""
+        for pasta in (self.pasta_execucao, self.pasta_destino):
+            if pasta and os.path.isdir(pasta):
+                return pasta
+        return None
 
     def _atualizar_progresso(self):
         total, feitos = len(self.ids), len(self.registros)
@@ -393,8 +537,6 @@ class LattesInk:
         modal.resizable(False, False)
         modal.configure(bg=COR_FUNDO)
         modal.transient(self.janela)
-        self._centralizar(modal, 460, 420)
-        modal.grab_set()  # bloqueia a janela principal enquanto a modal estiver aberta
 
         tk.Label(modal, text="Selecione a coluna que contém os Lattes IDs:",
                  font=(FONTE, 10, "bold"), bg=COR_FUNDO).pack(pady=(18, 6), padx=16, anchor="w")
@@ -417,13 +559,13 @@ class LattesInk:
         lista.see(melhor)
 
         lbl_previa = tk.Label(modal, font=(FONTE, 8), fg="#555", bg=COR_FUNDO,
-                              anchor="w", justify="left", wraplength=420)
+                              anchor="w", justify="left", wraplength=self._px(420))
         lbl_previa.pack(padx=16, fill="x")
         lbl_alerta = tk.Label(modal, font=(FONTE, 8, "bold"), fg=COR_AVISO, bg=COR_FUNDO,
-                              anchor="w", justify="left", wraplength=420)
+                              anchor="w", justify="left", wraplength=self._px(420))
         lbl_alerta.pack(padx=16, fill="x")
         tk.Label(modal, font=(FONTE, 8), fg="#555", bg=COR_FUNDO, anchor="w", justify="left",
-                 wraplength=420,
+                 wraplength=self._px(420),
                  text="Dica: no Excel, formate a coluna dos IDs como Texto antes de digitar ou "
                       "colar. Como Número, o Excel guarda só 15 dígitos e troca o último "
                       "dígito do ID por zero.").pack(padx=16, pady=(6, 0), fill="x")
@@ -468,6 +610,9 @@ class LattesInk:
                           padx=12, pady=6).pack(side="left", padx=(0, 10))
         self._criar_botao(frame_botoes, "Cancelar", modal.destroy, COR_CANCELAR,
                           padx=12, pady=6).pack(side="left")
+
+        self._centralizar(modal, self._px(460), self._px(420))
+        modal.grab_set()  # bloqueia a janela principal enquanto a modal estiver aberta
 
     # ------------------------------------------------------------------
     # 3. Captura
@@ -517,6 +662,18 @@ class LattesInk:
     def _enviar_para_janela(self, tipo, dado):
         """Chamado pela thread da captura. A fila é lida na thread principal (_processar_fila)."""
         self.fila.put((tipo, dado))
+
+    def repetir_falhas(self):
+        """Captura de novo, na mesma subpasta, os currículos que não deram OK."""
+        if self.captura_ativa or not self.pasta_execucao or not os.path.isdir(self.pasta_execucao):
+            return
+        falhas = {r.id_lattes for r in self._falhas()}
+        if not falhas:
+            return
+        self.registros = [r for r in self.registros if r.id_lattes not in falhas]
+        self.pode_continuar = True  # iniciar_captura retoma na mesma subpasta
+        self._log(f"🔁  Repetindo {len(falhas)} currículo(s) que não deram certo.")
+        self.iniciar_captura()
 
     def cancelar_captura(self):
         if not self.captura_ativa or self.cancelado.is_set():
@@ -582,8 +739,9 @@ class LattesInk:
                                 f"A captura foi cancelada.\n{processados}.{local}{dica_continuar}")
         elif motivo == "erro":
             self._log(f"❌  Captura interrompida: {detalhe}")
+            onde = f"\n\nDetalhes técnicos em:\n{ARQUIVO_LOG_ERROS}" if logger.handlers else ""
             messagebox.showerror("Captura interrompida",
-                                 f"{detalhe}\n\n{processados}.{local}{dica_continuar}")
+                                 f"{detalhe}\n\n{processados}.{local}{dica_continuar}{onde}")
         elif motivo == "pausado":
             self._log(f"⏸  Captura pausada: {processados}.")
             messagebox.showwarning("Captura pausada",
@@ -624,8 +782,9 @@ class LattesInk:
             return None
         caminho = os.path.join(self.pasta_execucao, coletor.NOME_PLANILHA)
         try:
-            coletor.salvar_planilha(self.registros, caminho)
+            coletor.salvar_planilha(self._registros_em_ordem(), caminho)
         except Exception as erro:
+            logger.warning("Não foi possível salvar a planilha em %s", caminho, exc_info=True)
             self._log(f"⚠️  Não foi possível salvar a planilha automaticamente "
                       f"({coletor.resumir_erro(erro)}). Use \"Exportar Excel\".")
             return None
@@ -649,8 +808,9 @@ class LattesInk:
             return
 
         try:
-            coletor.salvar_planilha(self.registros, caminho)
+            coletor.salvar_planilha(self._registros_em_ordem(), caminho)
         except Exception as erro:
+            logger.warning("Não foi possível exportar a planilha para %s", caminho, exc_info=True)
             messagebox.showerror("Erro ao exportar", f"Erro ao salvar arquivo Excel:\n{erro}")
             self._log(f"❌  Erro ao exportar Excel: {erro}")
             return
@@ -659,6 +819,29 @@ class LattesInk:
         messagebox.showinfo("Exportação concluída",
                             f"Dados exportados com sucesso para:\n{caminho}\n\n"
                             f"Total de registros: {len(self.registros)}")
+
+    def abrir_pasta(self):
+        pasta = self._pasta_para_abrir()
+        if pasta is None:
+            return
+        try:
+            abrir_no_sistema(pasta)
+        except OSError as erro:
+            messagebox.showerror("Erro ao abrir a pasta", f"Não foi possível abrir a pasta:\n{erro}")
+
+    # ------------------------------------------------------------------
+    # Erros inesperados
+    # ------------------------------------------------------------------
+
+    def _erro_inesperado(self, tipo, erro, rastro):
+        """
+        Erro não tratado num botão ou evento da janela. Sem isto, no .exe (que
+        não tem console) o erro sumiria sem deixar rastro. O programa continua aberto.
+        """
+        logger.error("Erro inesperado na janela (%s)", descricao_do_ambiente(), exc_info=(tipo, erro, rastro))
+        onde = f"\n\nOs detalhes foram gravados em:\n{ARQUIVO_LOG_ERROS}" if logger.handlers else ""
+        messagebox.showerror("Erro inesperado",
+                             f"Ocorreu um erro inesperado:\n{coletor.resumir_erro(erro)}{onde}")
 
     # ------------------------------------------------------------------
     # Fechar a janela
@@ -685,7 +868,12 @@ class LattesInk:
 
 
 def main():
-    app = LattesInk()
+    configurar_log_de_erros()
+    try:
+        app = LattesInk()
+    except Exception:
+        logger.exception("Erro ao abrir a janela (%s)", descricao_do_ambiente())
+        raise
     app.janela.mainloop()
 
 
