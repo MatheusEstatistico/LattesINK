@@ -772,3 +772,58 @@ def executar_lote(coletor_, pendentes, pasta, enviar, inicio=1, total=None):
     finally:
         coletor_.fechar()
         enviar("fim", (motivo, detalhe))
+
+
+# ---------------------------------------------------------------------------
+# Autoteste do executável
+# ---------------------------------------------------------------------------
+
+def autoteste(pasta):
+    """
+    Confere, sem abrir o Chrome, se o que a captura usa está funcionando:
+    carimbo no print, planilha, CSV, leitura de planilha e o selenium-manager.
+    Feito para o executável gerado pelo PyInstaller (veja LattesINK.py --autoteste),
+    onde falta de arquivo ou de módulo só aparece na hora de usar.
+    Levanta uma exceção se algo falhar.
+    """
+    agora = datetime.now()
+    caminho_print = os.path.join(pasta, "autoteste.png")
+    Image.new("RGB", (400, 300), "white").save(caminho_print)
+    carimbar_data(caminho_print, agora)
+
+    registro = Registro("0000000000000000", STATUS_OK, nome="Autoteste", ultima_atualizacao=agora.date(),
+                        arquivo_print=caminho_print, capturado_em=agora)
+    planilha = os.path.join(pasta, NOME_PLANILHA)
+    salvar_planilha([registro], planilha)
+    acrescentar_csv(registro, os.path.join(pasta, NOME_CSV))
+    lidos = [normalizar_ids(coluna.valores)[0] for coluna in ler_colunas(planilha)]
+    if [registro.id_lattes] not in lidos:
+        raise RuntimeError("a planilha gerada não pôde ser lida de volta")
+
+    # O build deixa só o selenium-manager da própria plataforma: ele precisa estar lá
+    binario = encontrar_selenium_manager()
+    if not os.path.isfile(binario):
+        raise RuntimeError(f"selenium-manager não encontrado em {binario}")
+
+
+def encontrar_selenium_manager():
+    """
+    Caminho do selenium-manager que o Selenium vai usar nesta plataforma.
+
+    A função do Selenium que faz isso é interna e já mudou de nome entre
+    versões; se nenhum dos nomes conhecidos existir, procura o arquivo na
+    pasta do próprio Selenium. Levanta uma exceção se não encontrar.
+    """
+    from selenium.webdriver.common import selenium_manager
+
+    gerente = selenium_manager.SeleniumManager()
+    for nome in ("_get_binary", "get_binary"):
+        obter = getattr(gerente, nome, None)
+        if callable(obter):
+            return str(obter())
+
+    for raiz, _, arquivos in os.walk(os.path.dirname(selenium_manager.__file__)):
+        for arquivo in arquivos:
+            if arquivo in ("selenium-manager", "selenium-manager.exe"):
+                return os.path.join(raiz, arquivo)
+    raise RuntimeError("selenium-manager não encontrado na pasta do Selenium")
