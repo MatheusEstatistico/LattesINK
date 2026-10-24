@@ -94,6 +94,12 @@ def test_titulo_com_a_versao(app):
     assert app.btn_ids.cget("text") == "Lattes IDs"
 
 
+def test_classe_da_janela_bate_com_o_atalho_do_linux(app):
+    with open(os.path.join(os.path.dirname(LattesINK.__file__), "packaging", "linux", "lattesink.desktop"),
+              encoding="utf-8") as f:
+        assert f"StartupWMClass={app.janela.winfo_class()}\n" in f.read()
+
+
 def test_janela_comporta_todo_o_conteudo(app):
     j = app.janela
     j.update()
@@ -279,3 +285,26 @@ def test_repetir_falhas_fica_desativado_sem_falhas(app, tmp_path):
     esperar_fim(app)
     assert not ativo(app.btn_repetir)
     assert app.btn_repetir.cget("text") == "Repetir falhas"
+
+
+# --- autoteste (usado no build) ---------------------------------------------------------
+
+def test_autoteste_do_executavel(abrir_janela, tmp_path):
+    abrir_janela()  # pula o teste se não houver display
+    relatorio = tmp_path / "autoteste.txt"
+    with pytest.raises(SystemExit) as saida:
+        LattesINK.main(["--autoteste", str(relatorio)])
+    assert saida.value.code == 0
+    assert relatorio.read_text(encoding="utf-8").startswith(f"OK (LattesINK {LattesINK.__version__}")
+
+
+def test_autoteste_informa_a_falha(abrir_janela, tmp_path, monkeypatch):
+    abrir_janela()
+
+    def quebrado(pasta):
+        raise RuntimeError("arquivo faltando no executável")
+
+    monkeypatch.setattr(coletor, "autoteste", quebrado)
+    relatorio = tmp_path / "autoteste.txt"
+    assert LattesINK.autoteste(str(relatorio)) == 1
+    assert "RuntimeError: arquivo faltando no executável" in relatorio.read_text(encoding="utf-8")

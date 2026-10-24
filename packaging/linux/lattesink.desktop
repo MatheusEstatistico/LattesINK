@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=LattesINK
+GenericName=Verificador de currículos Lattes
+Comment=Captura o nome, a data de atualização e um print de currículos Lattes
+Exec=lattesink
+Icon=lattesink
+Terminal=false
+Categories=Education;
+Keywords=Lattes;CNPq;currículo;pesquisa;
+StartupWMClass=Lattesink

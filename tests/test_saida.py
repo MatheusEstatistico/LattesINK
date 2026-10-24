@@ -122,3 +122,25 @@ def test_carimbo_no_canto_inferior_direito(tmp_path):
         assert img.size == (1080, 720)
         assert img.getpixel((10, 10)) == (255, 255, 255)        # resto do print intacto
         assert img.getpixel((1080 - 25, 720 - 25)) != (255, 255, 255)  # caixa escura do carimbo
+
+
+# --- autoteste do executável --------------------------------------------------------
+
+def test_autoteste_gera_print_planilha_e_csv(tmp_path):
+    coletor.autoteste(str(tmp_path))
+    assert {"autoteste.png", coletor.NOME_PLANILHA, coletor.NOME_CSV} <= set(os.listdir(tmp_path))
+
+
+def test_encontra_o_selenium_manager_mesmo_se_o_selenium_mudar_a_funcao(monkeypatch):
+    from selenium.webdriver.common import selenium_manager
+
+    caminho = coletor.encontrar_selenium_manager()
+    assert os.path.isfile(caminho)
+
+    class SemAFuncao:  # simula uma versão futura do Selenium, sem _get_binary/get_binary
+        pass
+
+    monkeypatch.setattr(selenium_manager, "SeleniumManager", SemAFuncao)
+    alternativo = coletor.encontrar_selenium_manager()
+    assert os.path.isfile(alternativo)
+    assert os.path.basename(alternativo) in ("selenium-manager", "selenium-manager.exe")

@@ -15,8 +15,10 @@ import platform
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
+import traceback
 from collections import Counter
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
@@ -173,7 +175,8 @@ class LattesInk:
     def __init__(self):
         identificar_app_no_windows()
         ativar_nitidez_no_windows()
-        self.janela = tk.Tk()
+        # className: no Linux, liga a janela ao atalho do menu (StartupWMClass=Lattesink)
+        self.janela = tk.Tk(className="lattesink")
         # Escala da tela: 1,0 em 100%, 1,5 em 150%... As fontes (em pontos) já
         # crescem sozinhas; as medidas em pixels passam por _px().
         self.escala = max(1.0, self.janela.winfo_fpixels("1i") / 96)
@@ -215,11 +218,23 @@ class LattesInk:
     # ------------------------------------------------------------------
 
     def _definir_icone(self):
+        """
+        Usa assets/icone.png (em qualquer sistema) ou, se não houver, o lattes.ico
+        das versões anteriores (só no Windows). Sem nenhum dos dois, fica sem ícone.
+        """
+        png = caminho_recurso(os.path.join("assets", "icone.png"))
+        if os.path.isfile(png):
+            try:
+                self._icone = tk.PhotoImage(file=png)  # guardar a referência, senão o Tk descarta a imagem
+                self.janela.iconphoto(True, self._icone)  # True: vale também para as outras janelas
+                return
+            except tk.TclError:
+                pass
         try:
             # "default=" aplica o ícone também às outras janelas (ex.: seleção de coluna)
             self.janela.iconbitmap(default=caminho_recurso("lattes.ico"))
         except tk.TclError:
-            pass  # sem o arquivo (ou fora do Windows) o programa abre sem ícone
+            pass
 
     def _criar_botao(self, pai, texto, comando, cor, tamanho=10, **opcoes):
         botao = tk.Button(
@@ -867,7 +882,38 @@ class LattesInk:
         self.janela.destroy()
 
 
-def main():
+def autoteste(relatorio=None):
+    """
+    "LattesINK --autoteste [relatório.txt]": usado no build (GitHub Actions)
+    para conferir se o executável gerado funciona: abre e fecha a janela e
+    gera print, planilha e CSV de exemplo, sem abrir o Chrome. Retorna 0 se
+    deu tudo certo e 1 se não; o relatório recebe "OK" ou o traceback.
+    """
+    try:
+        # ignore_cleanup_errors: no Windows, um antivírus pode segurar os arquivos
+        # recém-criados por um instante, e isso não é falha do executável
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as pasta:
+            coletor.autoteste(pasta)
+        app = LattesInk()
+        app.janela.update()
+        app.janela.after_cancel(app._id_fila)
+        app.janela.destroy()
+        resultado, texto = 0, f"OK ({descricao_do_ambiente()})\n"
+    except Exception:
+        resultado, texto = 1, traceback.format_exc()
+    if relatorio:
+        with open(relatorio, "w", encoding="utf-8") as f:
+            f.write(texto)
+    elif sys.stdout:  # no .exe do Windows não há console
+        print(texto, end="")
+    return resultado
+
+
+def main(argumentos=None):
+    argumentos = sys.argv[1:] if argumentos is None else argumentos
+    if argumentos[:1] == ["--autoteste"]:
+        sys.exit(autoteste(*argumentos[1:2]))
+
     configurar_log_de_erros()
     try:
         app = LattesInk()
