@@ -12,6 +12,7 @@ Assim dá para testar essas partes sem abrir a janela.
 
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import os
@@ -28,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 from selenium import webdriver
 from selenium.common.exceptions import (
     InvalidSessionIdException,
+    JavascriptException,
     NoSuchWindowException,
     WebDriverException,
 )
@@ -46,8 +48,23 @@ URL_LATTES = "https://lattes.cnpq.br/{id}"
 # ele também serve para saber que o CAPTCHA foi resolvido.
 SELETOR_NOME = "h2.nome"
 
+# Elementos que indicam uma página de CAPTCHA: reCAPTCHA, hCaptcha, Turnstile
+# (Cloudflare) e CAPTCHAs de imagem costumam ter "captcha" ou "data-sitekey"
+# em algum atributo. O "i" no fim de cada seletor ignora maiúsculas/minúsculas.
+SELETOR_CAPTCHA = ", ".join([
+    "iframe[src*='captcha' i]",
+    "iframe[src*='challenges.cloudflare.com' i]",
+    "[data-sitekey]",
+    "[class*='captcha' i]",
+    "[id*='captcha' i]",
+    "[name*='captcha' i]",
+    "[class*='turnstile' i]",
+])
+
 TEMPO_MAX_CAPTCHA = 180          # segundos esperando o usuário resolver o CAPTCHA
 TEMPO_MAX_CARREGAMENTO = 60      # segundos para uma página carregar
+TEMPO_PAGINA_INESPERADA = 30     # segundos numa página sem currículo e sem CAPTCHA antes de desistir
+LIMITE_FALHAS_SEGUIDAS = 3       # currículos seguidos sem abrir antes de pausar a captura
 LIMITE_DIAS_DESATUALIZADO = 365  # acima disso a planilha destaca o currículo
 
 NOME_PLANILHA = "dados_lattes.xlsx"
@@ -67,7 +84,14 @@ PADRAO_DATA = re.compile(
 STATUS_OK = "OK"
 STATUS_SEM_DATA = "Data não encontrada"
 STATUS_CAPTCHA = "CAPTCHA não resolvido"
+STATUS_PAGINA_INESPERADA = "Página inesperada"
 STATUS_ERRO = "Erro"
+
+# O que o navegador está mostrando enquanto o programa espera o currículo
+PAGINA_CARREGANDO = "carregando"
+PAGINA_CURRICULO = "curriculo"
+PAGINA_CAPTCHA = "captcha"
+PAGINA_OUTRA = "outra"
 
 
 class CapturaCancelada(Exception):
@@ -99,6 +123,11 @@ class Registro:
         return URL_LATTES.format(id=self.id_lattes)
 
     @property
+    def abriu(self) -> bool:
+        """True se o currículo chegou a abrir (mesmo que a data não tenha sido encontrada)."""
+        return self.status in (STATUS_OK, STATUS_SEM_DATA)
+
+    @property
     def dias_desde_atualizacao(self) -> int | None:
         """Dias entre a última atualização e o momento da captura."""
         if self.ultima_atualizacao is None:
@@ -114,7 +143,8 @@ def normalizar_ids(valores):
     """
     Extrai os IDs Lattes de uma lista de valores.
 
-    Aceita tanto o ID puro quanto um link ("http://lattes.cnpq.br/1234...").
+    Aceita tanto o ID puro quanto um link ("http://lattes.cnpq.br/1234..."),
+    e todos os IDs de um mesmo valor (ex.: uma linha "ID1, ID2, ID3").
     Retorna (ids, invalidos, qtd_duplicados):
       - ids: IDs únicos, na ordem em que apareceram;
       - invalidos: valores não vazios que não contêm um ID de 16 dígitos;
@@ -125,9 +155,9 @@ def normalizar_ids(valores):
         texto = str(valor).strip()
         if not texto:
             continue
-        encontrado = PADRAO_ID.search(texto)
-        if encontrado:
-            ids.append(encontrado.group())
+        encontrados = PADRAO_ID.findall(texto)
+        if encontrados:
+            ids.extend(encontrados)
         else:
             invalidos.append(texto)
     unicos = list(dict.fromkeys(ids))  # remove duplicados mantendo a ordem
@@ -136,14 +166,27 @@ def normalizar_ids(valores):
 
 def ler_texto(caminho):
     """
-    Lê um arquivo de texto. Tenta UTF-8 (com ou sem BOM, o que resolve o
-    caractere invisível que o Bloco de Notas coloca no início) e depois o
-    padrão do Excel/Windows em português.
+    Lê um arquivo de texto descobrindo a codificação.
+
+    Arquivos com BOM de UTF-16 ou UTF-32 (o "Texto Unicode" do Excel e o ">"
+    do PowerShell gravam assim) são lidos nessa codificação. Os demais tentam
+    UTF-8 (com ou sem BOM, o que resolve o caractere invisível que o Bloco de
+    Notas coloca no início) e depois o padrão do Excel/Windows em português.
     """
-    for codificacao in ("utf-8-sig", "cp1252", "latin-1"):
+    with open(caminho, "rb") as f:
+        dados = f.read()
+
+    # O BOM do UTF-32 LE começa com o do UTF-16 LE, então ele é testado antes
+    if dados.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        tentativas = ("utf-32",)
+    elif dados.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        tentativas = ("utf-16",)
+    else:
+        tentativas = ("utf-8-sig", "cp1252", "latin-1")
+
+    for codificacao in tentativas:
         try:
-            with open(caminho, encoding=codificacao, newline="") as f:
-                return f.read()
+            return dados.decode(codificacao)
         except UnicodeDecodeError:
             continue
     raise ValueError("Não foi possível identificar a codificação do arquivo.")
@@ -211,16 +254,26 @@ def _montar_colunas(linhas):
 
 
 def ler_colunas(caminho):
-    """Lê um .xlsx ou .csv e retorna a lista de colunas (objetos Coluna)."""
+    """
+    Lê um .xlsx ou .csv e retorna a lista de colunas (objetos Coluna).
+
+    No .xlsx são lidas todas as abas. Quando mais de uma aba tem dados, o nome
+    de cada coluna leva o nome da aba na frente (ex.: "Docentes › ID Lattes").
+    """
     extensao = os.path.splitext(caminho)[1].lower()
 
     if extensao == ".xlsx":
         wb = openpyxl.load_workbook(caminho, read_only=True, data_only=True)
         try:
-            linhas = list(wb.active.iter_rows(values_only=True))
+            abas = [(ws.title, _montar_colunas(ws.iter_rows(values_only=True))) for ws in wb.worksheets]
         finally:
             wb.close()
-        return _montar_colunas(linhas)
+        abas = [(titulo, colunas) for titulo, colunas in abas if colunas]
+        if len(abas) > 1:
+            for titulo, colunas in abas:
+                for coluna in colunas:
+                    coluna.nome = f"{titulo} › {coluna.nome}"
+        return [coluna for _, colunas in abas for coluna in colunas]
 
     if extensao == ".csv":
         texto = ler_texto(caminho)
@@ -250,13 +303,36 @@ def extrair_data_atualizacao(texto_pagina):
         return None
 
 
+def texto_da_pagina(driver):
+    """
+    Texto visível da página inteira.
+
+    Usa document.body.innerText direto no navegador: em currículos longos é
+    dezenas de vezes mais rápido que find_element(By.TAG_NAME, "body").text,
+    que passa pelo protocolo do WebDriver.
+    """
+    return driver.execute_script("return document.body ? document.body.innerText : '';") or ""
+
+
+def descrever_pagina(driver, limite=150):
+    """Título e começo do texto da página, para explicar na planilha por que o currículo não abriu."""
+    try:
+        titulo = (driver.title or "").strip()
+        texto = " ".join(texto_da_pagina(driver).split())
+    except WebDriverException:
+        return "não foi possível ler a página"
+    descricao = " — ".join(parte for parte in (titulo, texto) if parte) or "página em branco"
+    return descricao if len(descricao) <= limite else descricao[:limite - 1].rstrip() + "…"
+
+
 def resumir_erro(erro):
     """Mensagem curta do erro (as do Selenium trazem stacktrace e links de documentação)."""
     if isinstance(erro, (InvalidSessionIdException, NoSuchWindowException)):
         return "O navegador foi fechado durante a captura"
-    mensagem = getattr(erro, "msg", None) or str(erro) or erro.__class__.__name__
-    mensagem = mensagem.strip().splitlines()[0].split("; For documentation")[0]
-    return mensagem[:200]
+    mensagem = getattr(erro, "msg", None) or str(erro)
+    linhas = mensagem.strip().splitlines()
+    resumo = linhas[0].split("; For documentation")[0].strip() if linhas else ""
+    return resumo[:200] or erro.__class__.__name__
 
 
 # ---------------------------------------------------------------------------
@@ -309,11 +385,20 @@ class ColetorLattes:
     não mexe em nada do Tkinter e só se comunica pela função `log`.
     """
 
-    def __init__(self, cancelado, log=print, tempo_max_captcha=TEMPO_MAX_CAPTCHA):
+    def __init__(self, cancelado, log=print, tempo_max_captcha=TEMPO_MAX_CAPTCHA,
+                 tempo_pagina_inesperada=TEMPO_PAGINA_INESPERADA):
         self.cancelado = cancelado      # threading.Event
         self.log = log
         self.tempo_max_captcha = tempo_max_captcha
+        self.tempo_pagina_inesperada = tempo_pagina_inesperada
         self.driver = None
+        # Vira True na primeira vez que a página do CAPTCHA é reconhecida pelo
+        # SELETOR_CAPTCHA. Só a partir daí o coletor desiste antes do tempo de
+        # uma página que não é nem o CAPTCHA nem o currículo (ID inexistente,
+        # erro do site...). Se o CAPTCHA nunca for reconhecido (por exemplo, se
+        # o CNPq trocar de serviço), a espera continua sendo o tempo todo, como
+        # antes, para nunca desistir enquanto o usuário resolve o CAPTCHA.
+        self.captcha_reconhecido = False
 
     # --- ciclo de vida do navegador -------------------------------------
 
@@ -363,21 +448,66 @@ class ColetorLattes:
 
     # --- captura --------------------------------------------------------
 
+    @staticmethod
+    def _estado_pagina(driver):
+        """O que o navegador está mostrando: uma das constantes PAGINA_*."""
+        try:
+            if driver.execute_script("return document.readyState") != "complete":
+                return PAGINA_CARREGANDO
+            if driver.find_elements(By.CSS_SELECTOR, SELETOR_NOME):
+                return PAGINA_CURRICULO
+            if driver.find_elements(By.CSS_SELECTOR, SELETOR_CAPTCHA):
+                return PAGINA_CAPTCHA
+        except JavascriptException:
+            # A página trocou no meio da verificação (ex.: logo depois de resolver o CAPTCHA)
+            return PAGINA_CARREGANDO
+        return PAGINA_OUTRA
+
     def _aguardar_curriculo(self, driver):
         """
         Espera o currículo aparecer (ou seja, o CAPTCHA ser resolvido).
-        Retorna True quando a página do currículo terminou de carregar e
-        False se o tempo acabar. Levanta CapturaCancelada se o usuário cancelar.
+
+        Retorna o estado da página quando a espera termina: PAGINA_CURRICULO se
+        o currículo abriu; senão, o que estava na tela quando o tempo acabou.
+        Uma página que não é nem o currículo nem o CAPTCHA é abandonada depois
+        de tempo_pagina_inesperada segundos (veja captcha_reconhecido).
+        Levanta CapturaCancelada se o usuário cancelar.
         """
         fim = time.monotonic() + self.tempo_max_captcha
+        outra_pagina_desde = None
+        estado = PAGINA_CARREGANDO
         while time.monotonic() < fim:
             if self.cancelado.is_set():
                 raise CapturaCancelada()
-            if (driver.find_elements(By.CSS_SELECTOR, SELETOR_NOME)
-                    and driver.execute_script("return document.readyState") == "complete"):
-                return True
+            estado = self._estado_pagina(driver)
+            if estado == PAGINA_CURRICULO:
+                return estado
+            if estado == PAGINA_CAPTCHA:
+                self.captcha_reconhecido = True
+            if estado != PAGINA_OUTRA:
+                outra_pagina_desde = None
+            elif outra_pagina_desde is None:
+                outra_pagina_desde = time.monotonic()
+            elif (self.captcha_reconhecido
+                    and time.monotonic() - outra_pagina_desde >= self.tempo_pagina_inesperada):
+                return estado
             self.cancelado.wait(0.5)  # como time.sleep, mas acorda na hora se cancelar
-        return False
+        return estado
+
+    def _registro_sem_curriculo(self, lattes_id, driver, estado):
+        """Registro de um ID cujo currículo não abriu, com o motivo mais provável."""
+        if estado == PAGINA_CARREGANDO:
+            return Registro(lattes_id, STATUS_ERRO,
+                            observacao=f"A página não terminou de carregar em {self.tempo_max_captcha} s")
+        descricao = descrever_pagina(driver)
+        if estado == PAGINA_OUTRA and self.captcha_reconhecido:
+            return Registro(lattes_id, STATUS_PAGINA_INESPERADA,
+                            observacao=f"A página não mostrou o currículo nem o CAPTCHA: {descricao}")
+        observacao = f"O currículo não abriu em {self.tempo_max_captcha} s"
+        if estado == PAGINA_OUTRA:
+            # O CAPTCHA ainda não foi reconhecido nesta captura: pode ser ele ou outra página
+            observacao += f" (página: {descricao})"
+        return Registro(lattes_id, STATUS_CAPTCHA, observacao=observacao)
 
     def capturar(self, lattes_id, pasta):
         """
@@ -394,13 +524,13 @@ class ColetorLattes:
             self.log(f"⏳  [{lattes_id}]  Aguardando o currículo abrir "
                      f"(resolva o CAPTCHA no navegador, até {limite})...")
 
-            if not self._aguardar_curriculo(driver):
-                return Registro(lattes_id, STATUS_CAPTCHA,
-                                observacao=f"O currículo não abriu em {self.tempo_max_captcha} s")
+            estado = self._aguardar_curriculo(driver)
+            if estado != PAGINA_CURRICULO:
+                return self._registro_sem_curriculo(lattes_id, driver, estado)
 
             elementos_nome = driver.find_elements(By.CSS_SELECTOR, SELETOR_NOME)
             nome = elementos_nome[0].text.strip() if elementos_nome else ""
-            data = extrair_data_atualizacao(driver.find_element(By.TAG_NAME, "body").text)
+            data = extrair_data_atualizacao(texto_da_pagina(driver))
 
             caminho_print = os.path.join(pasta, f"{lattes_id}.png")
             capturado_em = datetime.now()
@@ -573,3 +703,61 @@ def salvar_planilha(registros, caminho_xlsx):
     ws.page_setup.fitToHeight = 0
     ws.print_title_rows = "1:1"
     wb.save(caminho_xlsx)
+
+
+# ---------------------------------------------------------------------------
+# Captura em lote
+# ---------------------------------------------------------------------------
+
+def executar_lote(coletor_, pendentes, pasta, enviar, inicio=1, total=None):
+    """
+    Captura os IDs `pendentes`, um de cada vez, gravando o CSV de backup a cada um.
+
+    Feito para rodar numa thread separada: não mexe na janela e só se comunica
+    pela função enviar(tipo, dado), chamada com
+      ("log", texto), ("registro", Registro) e, sempre no final,
+      ("fim", (motivo, detalhe)), com motivo "concluido", "cancelado",
+      "pausado" ou "erro".
+    `inicio` e `total` só servem para numerar as mensagens ([inicio/total]).
+
+    Depois de LIMITE_FALHAS_SEGUIDAS currículos seguidos sem abrir, a captura
+    é pausada: provavelmente o site está fora do ar ou ninguém está resolvendo
+    os CAPTCHAs, e continuar só faria o programa esperar à toa.
+    """
+    total = total or len(pendentes)
+    caminho_csv = os.path.join(pasta, NOME_CSV)
+    motivo, detalhe = "concluido", ""
+    falhas_seguidas = 0
+    try:
+        for indice, lattes_id in enumerate(pendentes):
+            posicao = inicio + indice
+            if coletor_.cancelado.is_set():
+                motivo = "cancelado"
+                break
+            enviar("log", f"🌐  [{posicao}/{total}]  Abrindo o currículo {lattes_id}")
+            registro = coletor_.capturar(lattes_id, pasta)
+            try:
+                acrescentar_csv(registro, caminho_csv)
+            except OSError as erro:
+                enviar("log", "⚠️  Não foi possível gravar o CSV de backup "
+                              f"(ele está aberto no Excel?): {erro}")
+            enviar("registro", registro)
+
+            falhas_seguidas = 0 if registro.abriu else falhas_seguidas + 1
+            if falhas_seguidas >= LIMITE_FALHAS_SEGUIDAS and indice < len(pendentes) - 1:
+                motivo = "pausado"
+                detalhe = (f"{falhas_seguidas} currículos seguidos não abriram "
+                           f"(o último: \"{registro.status}\").\n\n"
+                           "O site do Lattes pode estar fora do ar ou ter mudado, ou os CAPTCHAs "
+                           "não estão sendo resolvidos. A captura foi pausada para o programa "
+                           "não ficar esperando à toa.")
+                break
+    except CapturaCancelada:
+        motivo = "cancelado"
+    except ErroNavegador as erro:
+        motivo, detalhe = "erro", f"Não foi possível abrir o Chrome:\n{erro}"
+    except Exception as erro:
+        motivo, detalhe = "erro", f"Erro inesperado: {resumir_erro(erro)}"
+    finally:
+        coletor_.fechar()
+        enviar("fim", (motivo, detalhe))

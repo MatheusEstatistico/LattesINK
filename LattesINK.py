@@ -507,41 +507,16 @@ class LattesInk:
 
         # Tudo o que a thread precisa vai por argumento: ela não lê nada do Tkinter
         self.thread = threading.Thread(
-            target=self._executar_capturas,
-            args=(pendentes, self.pasta_execucao, self.coletor, len(self.registros), len(self.ids)),
+            target=coletor.executar_lote,
+            args=(self.coletor, pendentes, self.pasta_execucao, self._enviar_para_janela),
+            kwargs={"inicio": len(self.registros) + 1, "total": len(self.ids)},
             daemon=True,
         )
         self.thread.start()
 
-    def _executar_capturas(self, pendentes, pasta_execucao, coletor_, ja_feitos, total):
-        """
-        Roda em segundo plano. Não toca em nenhum widget: tudo o que a janela
-        precisa saber vai pela fila (self.fila), lida na thread principal.
-        """
-        caminho_csv = os.path.join(pasta_execucao, coletor.NOME_CSV)
-        motivo, detalhe = "concluido", ""
-        try:
-            for posicao, lattes_id in enumerate(pendentes, start=ja_feitos + 1):
-                if self.cancelado.is_set():
-                    motivo = "cancelado"
-                    break
-                self.fila.put(("log", f"🌐  [{posicao}/{total}]  Abrindo o currículo {lattes_id}"))
-                registro = coletor_.capturar(lattes_id, pasta_execucao)
-                try:
-                    coletor.acrescentar_csv(registro, caminho_csv)
-                except OSError as erro:
-                    self.fila.put(("log", "⚠️  Não foi possível gravar o CSV de backup "
-                                          f"(ele está aberto no Excel?): {erro}"))
-                self.fila.put(("registro", registro))
-        except coletor.CapturaCancelada:
-            motivo = "cancelado"
-        except coletor.ErroNavegador as erro:
-            motivo, detalhe = "erro", f"Não foi possível abrir o Chrome:\n{erro}"
-        except Exception as erro:
-            motivo, detalhe = "erro", f"Erro inesperado: {coletor.resumir_erro(erro)}"
-        finally:
-            coletor_.fechar()
-            self.fila.put(("fim", (motivo, detalhe)))
+    def _enviar_para_janela(self, tipo, dado):
+        """Chamado pela thread da captura. A fila é lida na thread principal (_processar_fila)."""
+        self.fila.put((tipo, dado))
 
     def cancelar_captura(self):
         if not self.captura_ativa or self.cancelado.is_set():
@@ -609,6 +584,10 @@ class LattesInk:
             self._log(f"❌  Captura interrompida: {detalhe}")
             messagebox.showerror("Captura interrompida",
                                  f"{detalhe}\n\n{processados}.{local}{dica_continuar}")
+        elif motivo == "pausado":
+            self._log(f"⏸  Captura pausada: {processados}.")
+            messagebox.showwarning("Captura pausada",
+                                   f"{detalhe}\n\n{processados}.{local}{dica_continuar}")
         else:
             self._mostrar_resumo(local)
 
