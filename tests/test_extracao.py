@@ -52,5 +52,13 @@ def test_erro_sem_mensagem_usa_o_nome_da_classe():
     assert coletor.resumir_erro(KeyError()) == "KeyError"
 
 
+@pytest.mark.parametrize("mensagem", [" ", "\n", "  \r\n  "])
+def test_mensagem_so_com_espacos_nao_quebra_a_captura(mensagem):
+    # Antes, isso levantava IndexError dentro do except de capturar() e
+    # interrompia o lote inteiro em vez de marcar só o currículo com erro.
+    assert coletor.resumir_erro(RuntimeError(mensagem)) == "RuntimeError"
+    assert coletor.resumir_erro(TimeoutException(mensagem)) == "TimeoutException"
+
+
 def test_mensagem_longa_e_cortada():
     assert len(coletor.resumir_erro(Exception("x" * 500))) == 200

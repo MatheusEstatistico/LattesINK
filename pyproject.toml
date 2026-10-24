@@ -75,6 +75,7 @@ select = [
 ignore = [
     "SIM105",  # try/except/pass é mais claro que contextlib.suppress nos pontos em que o erro é esperado
 ]
+allowed-confusables = ["›"]  # separador "Aba › Coluna" na lista de colunas
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2

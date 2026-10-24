@@ -1,5 +1,7 @@
 """Leitura e validação dos IDs Lattes (.txt, .csv e .xlsx)."""
 
+import codecs
+
 import openpyxl
 import pytest
 from falsos import ID_A, ID_B, ID_C
@@ -41,20 +43,55 @@ def test_rejeita_o_que_nao_e_id_de_16_digitos(valor):
     assert invalidos == [valor]
 
 
+@pytest.mark.parametrize("linha", [
+    f"{ID_A}, {ID_B}; {ID_C}",
+    f"{ID_A}\t{ID_B}\t{ID_C}",
+    f"http://lattes.cnpq.br/{ID_A} http://lattes.cnpq.br/{ID_B} {ID_C}",
+])
+def test_varios_ids_na_mesma_linha(linha):
+    # Antes, só o primeiro ID da linha era usado e os outros sumiam sem aviso
+    assert coletor.normalizar_ids([linha]) == ([ID_A, ID_B, ID_C], [], 0)
+
+
 def test_aceita_id_que_virou_float_no_excel():
     assert coletor.normalizar_ids([f"{ID_A}.0"])[0] == [ID_A]
 
 
 # --- .txt ---------------------------------------------------------------------
 
-@pytest.mark.parametrize("codificacao", ["utf-8", "utf-8-sig", "cp1252"])
+CONTEUDO_TXT = f"Pesquisadores da pós-graduação\r\n{ID_A}\r\n\r\nhttp://lattes.cnpq.br/{ID_B}\r\n"
+
+
+@pytest.mark.parametrize("codificacao", ["utf-8", "utf-8-sig", "cp1252", "utf-16", "utf-32"])
 def test_le_txt_nas_codificacoes_comuns(tmp_path, codificacao):
+    # "utf-16" e "utf-32" gravam com BOM, como o "Texto Unicode" do Excel e o PowerShell
     arquivo = tmp_path / "ids.txt"
-    arquivo.write_text(f"Pesquisadores da pós-graduação\r\n{ID_A}\r\n\r\nhttp://lattes.cnpq.br/{ID_B}\r\n",
-                       encoding=codificacao)
+    arquivo.write_text(CONTEUDO_TXT, encoding=codificacao, newline="")
     linhas = coletor.ler_ids_txt(str(arquivo))
     assert linhas[0] == "Pesquisadores da pós-graduação"
-    assert coletor.normalizar_ids(linhas)[0] == [ID_A, ID_B]
+    assert coletor.normalizar_ids(linhas) == ([ID_A, ID_B], ["Pesquisadores da pós-graduação"], 0)
+
+
+def test_le_utf16_big_endian_com_bom(tmp_path):
+    arquivo = tmp_path / "ids.txt"
+    arquivo.write_bytes(codecs.BOM_UTF16_BE + CONTEUDO_TXT.encode("utf-16-be"))
+    assert coletor.normalizar_ids(coletor.ler_ids_txt(str(arquivo)))[0] == [ID_A, ID_B]
+
+
+def test_texto_unicode_do_excel_com_varias_colunas(tmp_path):
+    # Excel > Salvar como > Texto Unicode: UTF-16 com BOM, colunas separadas por tabulação
+    arquivo = tmp_path / "planilha.txt"
+    arquivo.write_text(f"Nome\tID Lattes\r\nMaria\t{ID_A}\r\nJoão\t{ID_B}\r\n", encoding="utf-16", newline="")
+    ids, invalidos, _ = coletor.normalizar_ids(coletor.ler_ids_txt(str(arquivo)))
+    assert ids == [ID_A, ID_B]
+    assert invalidos == ["Nome\tID Lattes"]
+
+
+def test_utf16_corrompido_da_erro_claro(tmp_path):
+    arquivo = tmp_path / "ids.txt"
+    arquivo.write_bytes(codecs.BOM_UTF16_LE + b"1\x002\x003")  # número ímpar de bytes
+    with pytest.raises(ValueError, match="codificação"):
+        coletor.ler_ids_txt(str(arquivo))
 
 
 # --- .csv ---------------------------------------------------------------------
@@ -125,3 +162,32 @@ def test_xlsx_avisa_quando_o_id_foi_salvo_como_numero(tmp_path):
 
 def test_xlsx_vazio(tmp_path):
     assert coletor.ler_colunas(_salvar_xlsx(tmp_path / "vazio.xlsx", [])) == []
+
+
+def test_xlsx_le_todas_as_abas(tmp_path):
+    # Antes, só a aba ativa era lida: com os IDs em outra aba, aparecia "Nenhum ID válido"
+    wb = openpyxl.Workbook()
+    wb.active.title = "Resumo"
+    wb.active.append(["Planilha de controle"])
+    docentes = wb.create_sheet("Docentes")
+    docentes.append(["Nome", "ID Lattes"])
+    docentes.append(["Maria", ID_A])
+    wb.create_sheet("Vazia")
+    wb.active = 0
+    arquivo = tmp_path / "abas.xlsx"
+    wb.save(arquivo)
+
+    colunas = _por_nome(coletor.ler_colunas(str(arquivo)))
+    assert list(colunas) == ["Resumo › Planilha de controle", "Docentes › Nome", "Docentes › ID Lattes"]
+    assert colunas["Docentes › ID Lattes"] == [ID_A]
+
+
+def test_xlsx_com_uma_aba_so_nao_muda_o_nome_das_colunas(tmp_path):
+    wb = openpyxl.Workbook()
+    wb.active.title = "Vazia"
+    ids = wb.create_sheet("IDs")
+    ids.append(["ID"])
+    ids.append([ID_A])
+    arquivo = tmp_path / "abas.xlsx"
+    wb.save(arquivo)
+    assert _por_nome(coletor.ler_colunas(str(arquivo))) == {"ID": [ID_A]}
