@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "Se o LattesINK ajudou no seu trabalho, cite-o com os dados abaixo, informando a versão usada."
+title: "LattesINK: verificador de currículos Lattes"
+type: software
+authors:
+  - given-names: Matheus
+    family-names: Fernandes
+repository-code: "https://github.com/MatheusEstatistico/LattesINK"
+license: GPL-3.0
+abstract: >-
+  Aplicativo de código aberto que, a partir de uma lista de IDs Lattes, abre
+  cada currículo da Plataforma Lattes no navegador, registra o nome do
+  pesquisador e a data da última atualização, salva um print da página com
+  data e hora e gera uma planilha com os resultados.
+keywords:
+  - Lattes
+  - CNPq
+  - currículo
+  - pesquisa acadêmica
+  - Selenium
