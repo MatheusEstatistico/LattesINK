@@ -70,7 +70,7 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 
 - **Cancelar** fecha o navegador. Depois, **Continuar** retoma de onde parou, na mesma pasta.
 - Se 3 currículos seguidos não abrirem, a captura é **pausada** automaticamente. Isso acontece, por exemplo, quando ninguém está resolvendo os CAPTCHAs ou quando o site está fora do ar.
-- **Repetir falhas** captura de novo só os currículos que não deram certo.
+- **Repetir falhas** captura de novo só os currículos que não abriram. Os com "Data não encontrada" ficam de fora: o currículo abriu, e repetir daria o mesmo resultado.
 - **Abrir pasta** abre a pasta com os resultados.
 
 ## O que é gerado

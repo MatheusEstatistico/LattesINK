@@ -278,6 +278,34 @@ def test_repetir_so_os_que_falharam(app, tmp_path, avisos, coletor_falso):
         assert sum(ID_B in linha for linha in f) == 2
 
 
+def test_repetir_falhas_pausado_nao_perde_linhas_da_planilha(app, tmp_path, avisos, coletor_falso):
+    # 4 falhas na primeira passada; na repetição, 3 falham de novo e a captura pausa
+    # antes do último. Antes, o último sumia da planilha.
+    ids = [f"{n:016d}" for n in range(1, 9)]
+    falha = coletor.STATUS_CAPTCHA
+    coletor_falso.roteiro = {ids[i]: [falha, falha] for i in (1, 3, 5, 7)}
+    preparar(app, tmp_path / "saida", ids=ids)
+    app.iniciar_captura()
+    esperar_fim(app)
+
+    app.repetir_falhas()
+    esperar_fim(app)
+
+    assert avisos[-1][:2] == ("showwarning", "Captura pausada")
+    ws = openpyxl.load_workbook(os.path.join(app.pasta_execucao, coletor.NOME_PLANILHA)).active
+    assert [ws.cell(row=i, column=2).value for i in range(2, 10)] == ids
+    assert app.btn_repetir.cget("text") == "Repetir falhas (4)"
+
+
+def test_curriculo_sem_data_nao_entra_em_repetir_falhas(app, tmp_path, coletor_falso):
+    # O currículo abriu, só não tem a linha da data: repetir daria o mesmo resultado
+    coletor_falso.roteiro = {ID_B: coletor.STATUS_SEM_DATA}
+    preparar(app, tmp_path / "saida")
+    app.iniciar_captura()
+    esperar_fim(app)
+    assert not ativo(app.btn_repetir)
+
+
 def test_repetir_falhas_fica_desativado_sem_falhas(app, tmp_path):
     preparar(app, tmp_path / "saida")
     assert not ativo(app.btn_repetir)
