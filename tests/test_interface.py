@@ -3,10 +3,13 @@ Testes da janela (Tkinter) com um coletor falso: nenhum teste abre o Chrome.
 
 Precisam de um display. No Linux sem interface gráfica, rode com
 "xvfb-run -a python -m pytest"; sem display, estes testes são pulados.
+No CI (com a variável CI definida, como no GitHub Actions) sempre há
+display, então um erro do Tk ao abrir a janela faz o teste falhar.
 """
 
 import os
 import time
+import warnings
 from typing import ClassVar
 
 import pytest
@@ -54,7 +57,13 @@ def abrir_janela(monkeypatch, tmp_path, avisos, coletor_falso):
         try:
             janela = LattesINK.LattesInk()
         except tk.TclError as erro:
-            pytest.skip(f"sem display para abrir a janela: {erro}")
+            if not os.environ.get("CI"):
+                pytest.skip(f"sem display para abrir a janela: {erro}")
+            # No CI sempre há display (no Linux, o do Xvfb). Mas no Windows do GitHub Actions
+            # o Tcl às vezes falha ao carregar os próprios arquivos (init.tcl, tk.tcl...), que
+            # existem: tenta de novo uma vez. Um erro de verdade se repete e faz o teste falhar.
+            warnings.warn(f"o Tk falhou ao abrir a janela; tentando de novo: {erro}", stacklevel=2)
+            janela = LattesINK.LattesInk()
         abertas.append(janela)
         janela.janela.update()
         return janela

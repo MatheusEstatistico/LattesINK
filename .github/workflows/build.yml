@@ -1,0 +1,136 @@
+# Gera o .exe, o .deb e o .tar.gz e confere cada um com "--autoteste".
+#   - Em cada PR: os arquivos ficam em "Artifacts", na página da execução.
+#   - Em cada release publicada: confere a tag com a __version__ e anexa os
+#     arquivos e o SHA256SUMS.txt à release. Se a descrição da release estiver
+#     em branco, ela recebe a seção da versão no CHANGELOG.md.
+name: Build
+
+on:
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  versao:
+    runs-on: ubuntu-latest
+    outputs:
+      versao: ${{ steps.versao.outputs.versao }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: versao
+        run: echo "versao=$(python3 scripts/versao.py)" >> "$GITHUB_OUTPUT"
+
+      # Na release, confere tudo antes de gastar tempo com o build
+      - name: Conferir a tag e as notas da release
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          DESCRICAO: ${{ github.event.release.body }}
+          VERSAO: ${{ steps.versao.outputs.versao }}
+        run: |
+          if [ "$TAG" != "v$VERSAO" ]; then
+            echo "::error::A tag $TAG não bate com a versão de LattesINK.py ($VERSAO). Use a tag v$VERSAO ou mude __version__."
+            exit 1
+          fi
+          if [ -z "${DESCRICAO//[[:space:]]/}" ] && ! python3 scripts/versao.py --notas > /dev/null; then
+            echo "::error::A descrição da release está em branco e o CHANGELOG.md não tem a seção ## [$VERSAO]."
+            exit 1
+          fi
+
+  windows:
+    needs: versao
+    runs-on: windows-latest
+    env:
+      ARQUIVO: LattesINK-${{ needs.versao.outputs.versao }}-windows-x64.exe
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: python -m pip install ".[build]"
+      - run: pyinstaller --noconfirm LattesINK.spec
+
+      # O .exe não tem console: sem Start-Process -Wait, o PowerShell não espera ele terminar
+      - name: Autoteste do executável
+        run: |
+          $processo = Start-Process dist\LattesINK.exe -ArgumentList "--autoteste", "autoteste.txt" -Wait -PassThru
+          Get-Content autoteste.txt
+          exit $processo.ExitCode
+
+      - run: Move-Item dist\LattesINK.exe $env:ARQUIVO
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: ${{ env.ARQUIVO }}
+          if-no-files-found: error
+
+  linux:
+    needs: versao
+    # Ubuntu 22.04 (glibc 2.35): o executável roda nele e nos sistemas mais novos
+    runs-on: ubuntu-22.04
+    env:
+      VERSAO: ${{ needs.versao.outputs.versao }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: python -m pip install ".[build]"
+      - run: pyinstaller --noconfirm LattesINK.spec
+
+      - name: Pacotes .deb e .tar.gz
+        run: |
+          bash packaging/linux/build_deb.sh pacotes
+          tar -czf "pacotes/LattesINK-$VERSAO-linux-x86_64.tar.gz" -C dist LattesINK
+
+      # Instala o .deb e roda o comando "lattesink", como quem baixou o pacote
+      # (o Xvfb, para a janela abrir sem tela, já vem instalado no runner)
+      - name: Autoteste do pacote instalado
+        run: |
+          sudo apt-get install -y --no-install-recommends "./pacotes/lattesink_${VERSAO}_amd64.deb"
+          resultado=0
+          xvfb-run -a lattesink --autoteste autoteste.txt || resultado=$?
+          cat autoteste.txt
+          exit "$resultado"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: pacotes/
+          if-no-files-found: error
+
+  publicar:
+    if: github.event_name == 'release'
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name }}
+      DESCRICAO: ${{ github.event.release.body }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: arquivos
+          merge-multiple: true
+
+      - name: Notas da release (se a descrição estiver em branco)
+        run: |
+          if [ -z "${DESCRICAO//[[:space:]]/}" ]; then
+            python3 scripts/versao.py --notas > notas.md
+            gh release edit "$TAG" --notes-file notas.md
+          fi
+
+      - name: Anexar os arquivos à release
+        working-directory: arquivos
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload --clobber "$TAG" *

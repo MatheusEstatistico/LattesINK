@@ -1,0 +1,36 @@
+# Lint e testes em cada PR e em cada push na main, no Windows e no Linux,
+# com a menor versão do Python aceita (pyproject.toml) e uma recente.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check .
+
+      # Os testes da janela precisam de uma tela: no Linux, a tela virtual do Xvfb,
+      # que já vem instalado no runner
+      - name: Testes (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest
+      - name: Testes (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest
