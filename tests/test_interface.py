@@ -53,24 +53,17 @@ def abrir_janela(monkeypatch, tmp_path, avisos, coletor_falso):
     monkeypatch.setattr(LattesINK, "ARQUIVO_CONFIG_ANTIGO", str(tmp_path / ".lattesink.json"))
     abertas = []
 
-    def criar_janela():
-        try:
-            return LattesINK.LattesInk()
-        except tk.TclError as erro:
-            # No Windows do GitHub Actions, o Tcl às vezes não consegue ler os próprios
-            # arquivos (init.tcl, tk.tcl...), que existem: na segunda tentativa, ele lê.
-            if "couldn't read file" not in str(erro):
-                raise
-            warnings.warn(f"o Tcl não leu os próprios arquivos; tentando de novo: {erro}", stacklevel=2)
-            return LattesINK.LattesInk()
-
     def abrir():
         try:
-            janela = criar_janela()
+            janela = LattesINK.LattesInk()
         except tk.TclError as erro:
-            if os.environ.get("CI"):
-                raise  # no CI sempre há display (no Linux, o do Xvfb): o erro é do Tk ou do programa
-            pytest.skip(f"sem display para abrir a janela: {erro}")
+            if not os.environ.get("CI"):
+                pytest.skip(f"sem display para abrir a janela: {erro}")
+            # No CI sempre há display (no Linux, o do Xvfb). Mas no Windows do GitHub Actions
+            # o Tcl às vezes falha ao carregar os próprios arquivos (init.tcl, tk.tcl...), que
+            # existem: tenta de novo uma vez. Um erro de verdade se repete e faz o teste falhar.
+            warnings.warn(f"o Tk falhou ao abrir a janela; tentando de novo: {erro}", stacklevel=2)
+            janela = LattesINK.LattesInk()
         abertas.append(janela)
         janela.janela.update()
         return janela
