@@ -357,8 +357,11 @@ class LattesInk:
     # ------------------------------------------------------------------
 
     def _falhas(self):
-        """Registros dos currículos que não deram OK (podem ser capturados de novo)."""
-        return [r for r in self.registros if r.status != coletor.STATUS_OK]
+        """
+        Registros dos currículos que não abriram (podem ser capturados de novo).
+        "Data não encontrada" não entra: o currículo abriu, e repetir daria o mesmo resultado.
+        """
+        return [r for r in self.registros if not r.abriu]
 
     def _registros_em_ordem(self):
         """Registros na ordem do arquivo de IDs (repetir falhas deixa a lista fora de ordem)."""
@@ -633,8 +636,11 @@ class LattesInk:
     # 3. Captura
     # ------------------------------------------------------------------
 
-    def iniciar_captura(self):
-        """Inicia (ou retoma) a captura em uma thread separada para não travar a janela."""
+    def iniciar_captura(self, pendentes=None):
+        """
+        Inicia (ou retoma) a captura em uma thread separada para não travar a janela.
+        Com `pendentes` (Repetir falhas), captura só esses IDs, na subpasta atual.
+        """
         if self.captura_ativa or not self.ids or not self.pasta_destino:
             return
         if not os.path.isdir(self.pasta_destino):
@@ -643,7 +649,9 @@ class LattesInk:
             return
 
         retomando = self.pode_continuar and self.pasta_execucao and os.path.isdir(self.pasta_execucao)
-        if retomando:
+        if pendentes is not None:
+            pass  # Repetir falhas: os IDs já vêm escolhidos, e a subpasta é a atual
+        elif retomando:
             pendentes = self._pendentes()
             self._log(f"▶  Retomando a captura: faltam {len(pendentes)} ID(s).")
         else:
@@ -669,7 +677,7 @@ class LattesInk:
         self.thread = threading.Thread(
             target=coletor.executar_lote,
             args=(self.coletor, pendentes, self.pasta_execucao, self._enviar_para_janela),
-            kwargs={"inicio": len(self.registros) + 1, "total": len(self.ids)},
+            kwargs={"inicio": len(self.ids) - len(pendentes) + 1, "total": len(self.ids)},
             daemon=True,
         )
         self.thread.start()
@@ -679,16 +687,17 @@ class LattesInk:
         self.fila.put((tipo, dado))
 
     def repetir_falhas(self):
-        """Captura de novo, na mesma subpasta, os currículos que não deram OK."""
+        """Captura de novo, na mesma subpasta, os currículos que não abriram (e os que faltam)."""
         if self.captura_ativa or not self.pasta_execucao or not os.path.isdir(self.pasta_execucao):
             return
         falhas = {r.id_lattes for r in self._falhas()}
         if not falhas:
             return
-        self.registros = [r for r in self.registros if r.id_lattes not in falhas]
-        self.pode_continuar = True  # iniciar_captura retoma na mesma subpasta
+        # O registro antigo só é trocado quando chega o novo (_receber_registro): se a
+        # repetição for pausada ou cancelada, a planilha continua com todos os IDs.
+        repetir = falhas | set(self._pendentes())
         self._log(f"🔁  Repetindo {len(falhas)} currículo(s) que não deram certo.")
-        self.iniciar_captura()
+        self.iniciar_captura([i for i in self.ids if i in repetir])
 
     def cancelar_captura(self):
         if not self.captura_ativa or self.cancelado.is_set():
@@ -721,18 +730,18 @@ class LattesInk:
                 self._ao_terminar(*dado)
 
     def _receber_registro(self, r):
-        self.registros.append(r)
+        # Em Repetir falhas, o novo registro substitui o anterior do mesmo ID.
+        # A posição ([3/10]) já aparece na linha "Abrindo o currículo" logo acima.
+        self.registros = [x for x in self.registros if x.id_lattes != r.id_lattes] + [r]
         self._atualizar_progresso()
-        posicao = f"[{len(self.registros)}/{len(self.ids)}]"
         if r.status == coletor.STATUS_OK:
-            self._log(f"✅  {posicao}  {encurtar(r.nome)} — atualizado em "
-                      f"{r.ultima_atualizacao:%d/%m/%Y}")
+            self._log(f"✅  {encurtar(r.nome)} — atualizado em {r.ultima_atualizacao:%d/%m/%Y}")
         elif r.status == coletor.STATUS_SEM_DATA:
-            self._log(f"⚠️  {posicao}  {encurtar(r.nome)} — data de atualização não encontrada")
+            self._log(f"⚠️  {encurtar(r.nome)} — data de atualização não encontrada")
         elif r.status == coletor.STATUS_CAPTCHA:
-            self._log(f"⏰  {posicao}  {r.id_lattes} — CAPTCHA não resolvido a tempo")
+            self._log(f"⏰  {r.id_lattes} — CAPTCHA não resolvido a tempo")
         else:
-            self._log(f"❌  {posicao}  {r.id_lattes} — {r.observacao}")
+            self._log(f"❌  {r.id_lattes} — {r.observacao}")
 
     def _ao_terminar(self, motivo, detalhe):
         """Chamado na thread principal quando a captura termina, é cancelada ou falha."""

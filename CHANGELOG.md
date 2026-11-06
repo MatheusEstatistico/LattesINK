@@ -9,7 +9,7 @@ As mudanças relevantes do LattesINK ficam registradas aqui. O formato segue o
 ### Adicionado
 
 - Pacote `.deb` para Ubuntu, Debian e derivados, e um `.tar.gz` para outras distribuições Linux ([#6](https://github.com/MatheusEstatistico/LattesINK/issues/6)).
-- Botão **Repetir falhas**, que captura de novo só os currículos que não deram certo.
+- Botão **Repetir falhas**, que captura de novo só os currículos que não abriram.
 - Botão **Abrir pasta**, que abre a pasta com os resultados.
 - A captura é pausada depois de 3 currículos seguidos que não abriram (CAPTCHAs sem ninguém resolvendo, site fora do ar ou com erro), em vez de seguir pela lista inteira.
 - Status **Página inesperada** para páginas que não são nem o currículo nem o CAPTCHA (ID inexistente, erro do site), com o título e o começo do texto da página na coluna Observação. Elas são abandonadas depois de 30 segundos.
