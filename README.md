@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/MatheusEstatistico/LattesINK?label=vers%C3%A3o)](https://github.com/MatheusEstatistico/LattesINK/releases/latest)
 [![Licença](https://img.shields.io/github/license/MatheusEstatistico/LattesINK?label=licen%C3%A7a)](LICENSE)
 
-Verificador de currículos Lattes para fins acadêmicos. A partir de uma lista de IDs, o LattesINK abre cada currículo no Chrome e registra:
+Verificador de currículos Lattes para fins acadêmicos. A partir de uma lista de IDs, o LattesINK abre cada currículo no navegador (Chrome, Edge, Firefox, Chromium ou Brave) e registra:
 
 - o nome do pesquisador;
 - a data da última atualização;
@@ -26,7 +26,7 @@ Baixe a versão mais recente na página de [Releases](https://github.com/Matheus
 | Ubuntu 22.04+, Debian 12+, Linux Mint 21+ e derivados | `lattesink_X.Y.Z_amd64.deb` |
 | Outras distribuições Linux (glibc 2.35 ou mais nova) | `LattesINK-X.Y.Z-linux-x86_64.tar.gz` |
 
-É preciso ter o [Google Chrome](https://www.google.com/chrome/) instalado. Sem ele, o Selenium baixa uma versão de testes do Chrome na primeira captura.
+É preciso ter um destes navegadores instalado: [Google Chrome](https://www.google.com/chrome/), Microsoft Edge, Firefox, Chromium ou Brave. A janela mostra os que encontrar no computador e lembra o último escolhido. Sem nenhum deles, o Selenium baixa uma versão de testes do Chrome na primeira captura. Opera e Vivaldi, também baseados no Chromium, não funcionam: a versão deles não segue a do Chromium, e o Selenium não encontra o driver certo.
 
 No Windows, o `.exe` não precisa de instalação: é só abrir.
 
@@ -56,7 +56,7 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 
 1. **Pasta de destino**: escolha onde os resultados serão salvos. O programa lembra a última pasta usada.
 2. **Arquivo com os IDs**: escolha um `.txt`, `.csv` ou `.xlsx` com os IDs Lattes.
-3. **Iniciar Captura**: o Chrome abre o primeiro currículo. Resolva o CAPTCHA ("Não sou um robô") e o programa cuida do resto, um currículo de cada vez. Cada CAPTCHA pode levar até 3 minutos.
+3. **Iniciar Captura**: o navegador escolhido em **Navegador** abre o primeiro currículo. Resolva o CAPTCHA ("Não sou um robô") e o programa cuida do resto, um currículo de cada vez. Cada CAPTCHA pode levar até 3 minutos.
 
 ### O arquivo de IDs
 
@@ -112,7 +112,7 @@ Este aplicativo não passa sozinho pelo reCAPTCHA, então quem usa precisa resol
 
 ## Configuração e registro de erros
 
-A última pasta usada fica guardada em `config.json`. Erros inesperados ficam em `lattesink.log`, com os detalhes técnicos; ao relatar um problema, vale anexar esse arquivo. Os dois ficam em:
+A última pasta usada e o navegador escolhido ficam guardados em `config.json`. Erros inesperados ficam em `lattesink.log`, com os detalhes técnicos; ao relatar um problema, vale anexar esse arquivo. Os dois ficam em:
 
 - Windows: `%APPDATA%\LattesINK\`
 - Linux: `~/.config/lattesink/`

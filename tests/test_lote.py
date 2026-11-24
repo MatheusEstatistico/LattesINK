@@ -53,8 +53,8 @@ def test_lote_sem_chrome(tmp_path):
     coletor.executar_lote(c, [ID_A], str(tmp_path), mensagens)
     motivo, detalhe = mensagens[-1][1]
     assert motivo == "erro"
-    assert detalhe.startswith("Não foi possível abrir o Chrome:\nunable to obtain driver for chrome")
-    assert "Google Chrome está instalado" in detalhe
+    assert detalhe.startswith("Não foi possível abrir o Google Chrome:\nunable to obtain driver for chrome")
+    assert "escolha outro navegador" in detalhe
 
 
 def test_csv_aberto_no_excel_nao_interrompe_o_lote(novo_coletor, tmp_path):

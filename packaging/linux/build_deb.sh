@@ -42,13 +42,14 @@ Installed-Size: $(du -sk --exclude=DEBIAN "$pacote" | cut -f1)
 Section: science
 Priority: optional
 Homepage: https://github.com/MatheusEstatistico/LattesINK
-Recommends: google-chrome-stable
+Recommends: firefox | firefox-esr | google-chrome-stable | chromium | chromium-browser | microsoft-edge-stable | brave-browser
 Description: verificador de currículos Lattes
- Abre no Chrome o currículo Lattes de cada ID de uma lista (o CAPTCHA é
- resolvido por quem está usando), captura o nome do pesquisador, a data da
- última atualização e um print da página, e gera uma planilha Excel.
+ Abre no navegador (Chrome, Edge, Firefox, Chromium ou Brave) o currículo
+ Lattes de cada ID de uma lista (o CAPTCHA é resolvido por quem está usando),
+ captura o nome do pesquisador, a data da última atualização e um print da
+ página, e gera uma planilha Excel.
  .
- Sem o Google Chrome instalado, o Selenium baixa uma versão de testes do
+ Sem nenhum desses navegadores, o Selenium baixa uma versão de testes do
  Chrome na primeira captura.
 CONTROLE
 

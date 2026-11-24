@@ -18,6 +18,8 @@ import io
 import logging
 import os
 import re
+import shutil
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -34,7 +36,6 @@ from selenium.common.exceptions import (
     NoSuchWindowException,
     WebDriverException,
 )
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 
@@ -72,6 +73,45 @@ NOME_PLANILHA = "dados_lattes.xlsx"
 NOME_CSV = "dados_lattes.csv"
 NOME_LOG = "log.txt"
 
+# Navegadores em que a captura funciona, na ordem da lista da janela.
+# O Chromium e o Brave usam o chromedriver, como o Chrome.
+NAVEGADORES = {
+    "chrome": "Google Chrome",
+    "edge": "Microsoft Edge",
+    "firefox": "Firefox",
+    "chromium": "Chromium",
+    "brave": "Brave",
+}
+
+# Onde cada navegador costuma ficar. No Windows, os caminhos são relativos às
+# pastas Program Files, Program Files (x86) e AppData\Local; no Linux, um nome
+# sem "/" é procurado no PATH. O Chromium do snap (Ubuntu) é usado pelo
+# executável de dentro do snap, como o próprio Selenium faz.
+LOCAIS_DOS_NAVEGADORES = {
+    "win32": {
+        "chrome": [r"Google\Chrome\Application\chrome.exe"],
+        "edge": [r"Microsoft\Edge\Application\msedge.exe"],
+        "firefox": [r"Mozilla Firefox\firefox.exe"],
+        "chromium": [r"Chromium\Application\chrome.exe"],
+        "brave": [r"BraveSoftware\Brave-Browser\Application\brave.exe"],
+    },
+    "darwin": {
+        "chrome": ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
+        "edge": ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
+        "firefox": ["/Applications/Firefox.app/Contents/MacOS/firefox"],
+        "chromium": ["/Applications/Chromium.app/Contents/MacOS/Chromium"],
+        "brave": ["/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"],
+    },
+    "linux": {
+        "chrome": ["google-chrome", "google-chrome-stable"],
+        "edge": ["microsoft-edge", "microsoft-edge-stable"],
+        "firefox": ["firefox", "firefox-esr"],
+        "chromium": ["/snap/chromium/current/usr/lib/chromium-browser/chrome",
+                     "chromium", "chromium-browser"],
+        "brave": ["brave-browser"],
+    },
+}
+
 # Um ID Lattes tem exatamente 16 dígitos. Os "lookarounds" impedem que um
 # número maior (17+ dígitos) seja aceito pela metade.
 PADRAO_ID = re.compile(r"(?<!\d)\d{16}(?!\d)")
@@ -105,7 +145,7 @@ class CapturaCancelada(Exception):
 
 
 class ErroNavegador(Exception):
-    """Não foi possível abrir o Chrome (sem ele, nenhum ID pode ser capturado)."""
+    """Não foi possível abrir o navegador (sem ele, nenhum ID pode ser capturado)."""
 
 
 # ---------------------------------------------------------------------------
@@ -384,17 +424,37 @@ def carimbar_data(caminho_arquivo, quando):
 # Navegador
 # ---------------------------------------------------------------------------
 
+def caminho_do_navegador(navegador):
+    """Executável de um navegador (chave de NAVEGADORES) neste computador, ou None."""
+    locais = LOCAIS_DOS_NAVEGADORES.get(sys.platform, LOCAIS_DOS_NAVEGADORES["linux"])[navegador]
+    if sys.platform == "win32":
+        pastas = [os.environ.get(nome) for nome in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
+        locais = [os.path.join(pasta, local) for pasta in pastas if pasta for local in locais]
+    for local in locais:
+        caminho = local if os.path.isabs(local) else shutil.which(local)
+        if caminho and os.path.isfile(caminho):
+            return caminho
+    return None
+
+
+def navegadores_instalados():
+    """Chaves de NAVEGADORES dos navegadores encontrados neste computador."""
+    return [navegador for navegador in NAVEGADORES if caminho_do_navegador(navegador)]
+
+
 class ColetorLattes:
     """
-    Mantém um único Chrome aberto durante toda a captura e visita um
+    Mantém um único navegador aberto durante toda a captura e visita um
     currículo de cada vez. Pode ser usado a partir de uma thread separada:
     não mexe em nada do Tkinter e só se comunica pela função `log`.
+    `navegador` é uma das chaves de NAVEGADORES.
     """
 
-    def __init__(self, cancelado, log=print, tempo_max_captcha=TEMPO_MAX_CAPTCHA,
+    def __init__(self, cancelado, log=print, navegador="chrome", tempo_max_captcha=TEMPO_MAX_CAPTCHA,
                  tempo_pagina_inesperada=TEMPO_PAGINA_INESPERADA):
         self.cancelado = cancelado      # threading.Event
         self.log = log
+        self.navegador = navegador
         self.tempo_max_captcha = tempo_max_captcha
         self.tempo_pagina_inesperada = tempo_pagina_inesperada
         self.driver = None
@@ -409,9 +469,21 @@ class ColetorLattes:
     # --- ciclo de vida do navegador -------------------------------------
 
     def _criar_driver(self):
-        opcoes = Options()
-        opcoes.add_argument("--window-size=1080,720")
-        driver = webdriver.Chrome(options=opcoes)
+        if self.navegador == "firefox":
+            opcoes, classe = webdriver.FirefoxOptions(), webdriver.Firefox
+        elif self.navegador == "edge":
+            opcoes, classe = webdriver.EdgeOptions(), webdriver.Edge
+        else:
+            opcoes, classe = webdriver.ChromeOptions(), webdriver.Chrome
+        # O Selenium encontra sozinho o Chrome, o Edge e o Firefox. O Chromium e o
+        # Brave usam o chromedriver com o executável deles; sem isso, abriria o Chrome.
+        if self.navegador in ("chromium", "brave"):
+            caminho = caminho_do_navegador(self.navegador)
+            if caminho is None:
+                raise FileNotFoundError("ele não foi encontrado neste computador")
+            opcoes.binary_location = caminho
+        driver = classe(options=opcoes)
+        driver.set_window_size(1080, 720)
         driver.set_page_load_timeout(TEMPO_MAX_CARREGAMENTO)
         return driver
 
@@ -439,8 +511,9 @@ class ColetorLattes:
             raise CapturaCancelada()
         try:
             self.driver = self._criar_driver()
-        except WebDriverException as erro:
-            raise ErroNavegador(resumir_erro(erro)) from erro
+        except (WebDriverException, FileNotFoundError) as erro:
+            raise ErroNavegador(f"Não foi possível abrir o {NAVEGADORES[self.navegador]}:\n"
+                                f"{resumir_erro(erro)}") from erro
         return self.driver
 
     def fechar(self):
@@ -763,9 +836,9 @@ def executar_lote(coletor_, pendentes, pasta, enviar, inicio=1, total=None):
     except CapturaCancelada:
         motivo = "cancelado"
     except ErroNavegador as erro:
-        logger.error("Não foi possível abrir o Chrome", exc_info=True)
-        motivo, detalhe = "erro", (f"Não foi possível abrir o Chrome:\n{erro}\n\n"
-                                   "Verifique se o Google Chrome está instalado e atualizado.")
+        logger.error("Não foi possível abrir o navegador", exc_info=True)
+        motivo, detalhe = "erro", (f"{erro}\n\nVerifique se ele está instalado e atualizado, "
+                                   "ou escolha outro navegador na janela.")
     except Exception as erro:
         logger.exception("Erro inesperado durante a captura")
         motivo, detalhe = "erro", f"Erro inesperado: {resumir_erro(erro)}"
@@ -780,7 +853,7 @@ def executar_lote(coletor_, pendentes, pasta, enviar, inicio=1, total=None):
 
 def autoteste(pasta):
     """
-    Confere, sem abrir o Chrome, se o que a captura usa está funcionando:
+    Confere, sem abrir o navegador, se o que a captura usa está funcionando:
     carimbo no print, planilha, CSV, leitura de planilha e o selenium-manager.
     Feito para o executável gerado pelo PyInstaller (veja LattesINK.py --autoteste),
     onde falta de arquivo ou de módulo só aparece na hora de usar.

@@ -6,8 +6,11 @@ As mudanças relevantes do LattesINK ficam registradas aqui. O formato segue o
 
 ## [Não lançado]
 
+## [1.1.0] - 2026-11-23
+
 ### Adicionado
 
+- Captura também no Microsoft Edge, no Firefox, no Chromium e no Brave, além do Google Chrome. A janela mostra os navegadores encontrados no computador e lembra o último escolhido.
 - Pacote `.deb` para Ubuntu, Debian e derivados, e um `.tar.gz` para outras distribuições Linux ([#6](https://github.com/MatheusEstatistico/LattesINK/issues/6)).
 - Botão **Repetir falhas**, que captura de novo só os currículos que não abriram.
 - Botão **Abrir pasta**, que abre a pasta com os resultados.
@@ -27,7 +30,7 @@ As mudanças relevantes do LattesINK ficam registradas aqui. O formato segue o
 - A data de atualização é lida muito mais rápido em currículos longos.
 - A planilha sai sempre na ordem do arquivo de IDs.
 - Botões desativados ficam cinza.
-- Quando o Chrome não abre, a mensagem sugere verificar se ele está instalado.
+- Quando o navegador não abre, a mensagem sugere verificar se ele está instalado ou escolher outro.
 
 ### Corrigido
 
@@ -41,5 +44,6 @@ As mudanças relevantes do LattesINK ficam registradas aqui. O formato segue o
 
 Primeira versão publicada: interface gráfica para capturar o nome, a data da última atualização e um print com data e hora de uma lista de currículos Lattes (`.txt`, `.csv` ou `.xlsx`), gerando uma planilha formatada, um CSV de backup e um log. A captura pode ser cancelada e retomada.
 
-[Não lançado]: https://github.com/MatheusEstatistico/LattesINK/compare/v1.0.0...HEAD
+[Não lançado]: https://github.com/MatheusEstatistico/LattesINK/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/MatheusEstatistico/LattesINK/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/MatheusEstatistico/LattesINK/releases/tag/v1.0.0
