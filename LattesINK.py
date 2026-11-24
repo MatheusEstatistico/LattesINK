@@ -5,7 +5,7 @@ A coleta em si (navegador, extração, planilha) fica em coletor.py,
 que precisa estar na mesma pasta deste arquivo.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import json
 import logging
