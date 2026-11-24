@@ -1,5 +1,5 @@
 """
-Testes da janela (Tkinter) com um coletor falso: nenhum teste abre o Chrome.
+Testes da janela (Tkinter) com um coletor falso: nenhum teste abre um navegador.
 
 Precisam de um display. No Linux sem interface gráfica, rode com
 "xvfb-run -a python -m pytest"; sem display, estes testes são pulados.
@@ -51,6 +51,8 @@ def abrir_janela(monkeypatch, tmp_path, avisos, coletor_falso):
     """Abre janelas com a configuração isolada numa pasta temporária e as fecha no fim do teste."""
     monkeypatch.setattr(LattesINK, "ARQUIVO_CONFIG", str(tmp_path / "config" / "config.json"))
     monkeypatch.setattr(LattesINK, "ARQUIVO_CONFIG_ANTIGO", str(tmp_path / ".lattesink.json"))
+    # A lista de navegadores não depende do que está instalado na máquina dos testes
+    monkeypatch.setattr(coletor, "navegadores_instalados", lambda: ["chrome", "firefox"])
     abertas = []
 
     def abrir():
@@ -201,6 +203,39 @@ def test_pausa_depois_de_falhas_seguidas(app, tmp_path, avisos, coletor_falso):
     esperar_fim(app)
     assert avisos[-1][:2] == ("showwarning", "Captura pausada")
     assert app.btn_iniciar.cget("text") == "▶  Continuar (1 restantes)"
+
+
+# --- navegador ------------------------------------------------------------------
+
+def test_escolher_o_navegador(app, abrir_janela, tmp_path):
+    assert list(app.combo_navegador.cget("values")) == ["Google Chrome", "Firefox"]
+    assert app.combo_navegador.get() == "Google Chrome"
+
+    app.combo_navegador.current(1)
+    app.combo_navegador.event_generate("<<ComboboxSelected>>")
+    assert app.navegador == "firefox"
+    assert abrir_janela().combo_navegador.get() == "Firefox"  # a escolha fica guardada
+
+    preparar(app, tmp_path / "saida")
+    app.iniciar_captura()
+    assert app.coletor.navegador == "firefox"
+    assert str(app.combo_navegador.cget("state")) == "disabled"  # não muda no meio da captura
+    esperar_fim(app)
+    assert str(app.combo_navegador.cget("state")) == "readonly"
+
+
+def test_navegador_guardado_que_nao_esta_mais_instalado(abrir_janela):
+    LattesINK.salvar_config({"navegador": "brave"})
+    app = abrir_janela()
+    assert app.navegador == "chrome"
+    assert app.combo_navegador.get() == "Google Chrome"
+
+
+def test_sem_navegador_encontrado_fica_o_chrome(monkeypatch, abrir_janela):
+    monkeypatch.setattr(coletor, "navegadores_instalados", list)
+    app = abrir_janela()
+    assert list(app.combo_navegador.cget("values")) == ["Google Chrome"]
+    assert app.navegador == "chrome"
 
 
 # --- erros inesperados ------------------------------------------------------------

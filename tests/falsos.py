@@ -93,9 +93,10 @@ class ColetorFalso:
     roteiro: ClassVar[dict] = {}
     bloquear: ClassVar[bool] = False
 
-    def __init__(self, cancelado, log=print, **_):
+    def __init__(self, cancelado, log=print, navegador="chrome", **_):
         self.cancelado = cancelado
         self.log = log
+        self.navegador = navegador
         self.fechado = False
 
     def capturar(self, lattes_id, pasta):

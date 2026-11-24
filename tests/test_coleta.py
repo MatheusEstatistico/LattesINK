@@ -1,4 +1,4 @@
-"""ColetorLattes com um navegador falso: nenhum teste abre o Chrome."""
+"""ColetorLattes com um navegador falso: nenhum teste abre um navegador de verdade."""
 
 import os
 import time

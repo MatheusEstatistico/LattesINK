@@ -188,6 +188,11 @@ class LattesInk:
 
         # Estado interno
         self.config = carregar_config()
+        # Navegadores deste computador (chaves de coletor.NAVEGADORES). Sem nenhum,
+        # fica o Chrome: o Selenium baixa uma versão de testes dele.
+        self.navegadores = coletor.navegadores_instalados() or ["chrome"]
+        salvo = self.config.get("navegador")
+        self.navegador = salvo if salvo in self.navegadores else self.navegadores[0]
         self.pasta_destino = None        # None = nenhuma pasta escolhida
         self.ids = []                    # IDs válidos, sem repetição
         self.registros = []              # coletor.Registro de cada ID já processado
@@ -290,6 +295,18 @@ class LattesInk:
         self.label_ids, self.btn_ids = self._caixa_arquivo(
             principal, "📄", "Nenhum arquivo selecionado", "Lattes IDs", self.escolher_ids)
 
+        # Navegador usado na captura
+        linha_navegador = tk.Frame(principal, bg=COR_FUNDO)
+        linha_navegador.pack(fill="x", pady=(0, 12))
+        tk.Label(linha_navegador, text="Navegador:", font=(FONTE, 10, "bold"),
+                 bg=COR_FUNDO).pack(side="left")
+        self.combo_navegador = ttk.Combobox(
+            linha_navegador, state="readonly", width=18, font=(FONTE, 10),
+            values=[coletor.NAVEGADORES[n] for n in self.navegadores])
+        self.combo_navegador.current(self.navegadores.index(self.navegador))
+        self.combo_navegador.bind("<<ComboboxSelected>>", self._escolher_navegador)
+        self.combo_navegador.pack(side="left", padx=(8, 0))
+
         # 3. Progresso
         self._titulo_secao(principal, "3. Progresso da captura")
         frame_progresso = tk.Frame(principal, bg=COR_FUNDO)
@@ -377,9 +394,10 @@ class LattesInk:
         capturando = self.captura_ativa
         cancelando = capturando and self.cancelado.is_set()
 
-        # Durante a captura não dá para trocar a pasta nem os IDs
+        # Durante a captura não dá para trocar a pasta, os IDs nem o navegador
         self._ativar(self.btn_pasta, not capturando)
         self._ativar(self.btn_ids, not capturando)
+        self.combo_navegador.configure(state="disabled" if capturando else "readonly")
         self._ativar(self.btn_exportar, not capturando and bool(self.registros))
         self._ativar(self.btn_abrir, self._pasta_para_abrir() is not None)
         self._ativar(self.btn_cancelar, capturando and not cancelando)
@@ -456,6 +474,11 @@ class LattesInk:
             self.config["pasta_destino"] = pasta
             salvar_config(self.config)
         self._atualizar_botoes()
+
+    def _escolher_navegador(self, _evento=None):
+        self.navegador = self.navegadores[self.combo_navegador.current()]
+        self.config["navegador"] = self.navegador
+        salvar_config(self.config)
 
     # ------------------------------------------------------------------
     # 2. Arquivo de IDs
@@ -668,7 +691,7 @@ class LattesInk:
         self.pode_continuar = False
         self.cancelado.clear()
         self.captura_ativa = True
-        self.coletor = coletor.ColetorLattes(self.cancelado,
+        self.coletor = coletor.ColetorLattes(self.cancelado, navegador=self.navegador,
                                              log=lambda msg: self.fila.put(("log", msg)))
         self._atualizar_progresso()
         self._atualizar_botoes()
@@ -705,7 +728,7 @@ class LattesInk:
         self.cancelado.set()
         self._atualizar_botoes()
         self._log("🛑  Cancelamento solicitado. Fechando o navegador...")
-        # Fechar o Chrome interrompe na hora o que a thread estiver esperando.
+        # Fechar o navegador interrompe na hora o que a thread estiver esperando.
         # É feito em outra thread para a janela não congelar enquanto ele fecha.
         if self.coletor:
             threading.Thread(target=self.coletor.fechar, daemon=True).start()
@@ -895,7 +918,7 @@ def autoteste(relatorio=None):
     """
     "LattesINK --autoteste [relatório.txt]": usado no build (GitHub Actions)
     para conferir se o executável gerado funciona: abre e fecha a janela e
-    gera print, planilha e CSV de exemplo, sem abrir o Chrome. Retorna 0 se
+    gera print, planilha e CSV de exemplo, sem abrir o navegador. Retorna 0 se
     deu tudo certo e 1 se não; o relatório recebe "OK" ou o traceback.
     """
     try:

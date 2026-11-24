@@ -8,6 +8,7 @@ As mudanças relevantes do LattesINK ficam registradas aqui. O formato segue o
 
 ### Adicionado
 
+- Captura também no Microsoft Edge, no Firefox, no Chromium e no Brave, além do Google Chrome. A janela mostra os navegadores encontrados no computador e lembra o último escolhido.
 - Pacote `.deb` para Ubuntu, Debian e derivados, e um `.tar.gz` para outras distribuições Linux ([#6](https://github.com/MatheusEstatistico/LattesINK/issues/6)).
 - Botão **Repetir falhas**, que captura de novo só os currículos que não abriram.
 - Botão **Abrir pasta**, que abre a pasta com os resultados.
@@ -27,7 +28,7 @@ As mudanças relevantes do LattesINK ficam registradas aqui. O formato segue o
 - A data de atualização é lida muito mais rápido em currículos longos.
 - A planilha sai sempre na ordem do arquivo de IDs.
 - Botões desativados ficam cinza.
-- Quando o Chrome não abre, a mensagem sugere verificar se ele está instalado.
+- Quando o navegador não abre, a mensagem sugere verificar se ele está instalado ou escolher outro.
 
 ### Corrigido
 
