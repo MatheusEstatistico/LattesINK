@@ -23,7 +23,7 @@ Baixe a versão mais recente na página de [Releases](https://github.com/Matheus
 | Sistema | Arquivo |
 | --- | --- |
 | Windows 10 e 11 | `LattesINK-X.Y.Z-windows-x64.exe` |
-| Ubuntu 22.04+, Debian 12+, Linux Mint 21+ e derivados | `lattesink_X.Y.Z_amd64.deb` |
+| Debian 12+, Ubuntu 22.04+, Linux Mint 21+ e derivados | `lattesink_X.Y.Z_amd64.deb` |
 | Outras distribuições Linux (glibc 2.35 ou mais nova) | `LattesINK-X.Y.Z-linux-x86_64.tar.gz` |
 
 É preciso ter um destes navegadores instalado: [Google Chrome](https://www.google.com/chrome/), Microsoft Edge, Firefox, Chromium ou Brave. A janela mostra os que encontrar no computador e lembra o último escolhido. Sem nenhum deles, o Selenium baixa uma versão de testes do Chrome na primeira captura. Opera e Vivaldi, também baseados no Chromium, não funcionam: a versão deles não segue a do Chromium, e o Selenium não encontra o driver certo.
